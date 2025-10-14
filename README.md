@@ -1,36 +1,136 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# Fetchman
 
-## Getting Started
+Eine selbstgehostete Postman-Alternative für API-Entwicklung und Testing. Gebaut mit Next.js 15, React 19, MongoDB und shadcn/ui.
 
-First, run the development server:
+## Features
 
+- **MongoDB Integration**: Alle Collections und Requests werden sicher in MongoDB gespeichert
+- **Selbst gehostet**: Volle Kontrolle über deine Daten
+- **Modern Stack**: Next.js 15, React 19, TypeScript, Tailwind CSS
+- **Dark Mode**: Vollständige Theme-Unterstützung mit System-Synchronisation
+- **Docker Support**: Einfaches Deployment mit Docker Compose
+
+## Voraussetzungen
+
+- Node.js 20 oder höher
+- Docker und Docker Compose (für Container-Deployment)
+- npm oder yarn
+
+## Installation & Entwicklung
+
+### Lokale Entwicklung
+
+1. Repository klonen:
 ```bash
-npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
+git clone <repository-url>
+cd fetchman
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+2. Dependencies installieren:
+```bash
+npm install
+```
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+3. MongoDB mit Docker starten:
+```bash
+docker compose up mongodb mongo-express -d
+```
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+4. Entwicklungsserver starten:
+```bash
+npm run dev
+```
 
-## Learn More
+Die App ist nun verfügbar unter `http://localhost:3000`
 
-To learn more about Next.js, take a look at the following resources:
+Mongo Express (MongoDB Web UI) ist verfügbar unter `http://localhost:8081`
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
+### Mit Docker Compose
 
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
+Die gesamte Anwendung inklusive MongoDB und Mongo Express starten:
 
-## Deploy on Vercel
+```bash
+docker compose up -d
+```
 
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
+Services:
+- **Next.js App**: http://localhost:3000
+- **MongoDB**: localhost:27017
+- **Mongo Express**: http://localhost:8081
 
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+## Umgebungsvariablen
+
+Erstelle eine `.env.local` Datei im Root-Verzeichnis:
+
+```env
+MONGODB_URI=mongodb://admin:admin123@localhost:27017/fetchman?authSource=admin
+```
+
+**Hinweis**: Die Standard-Credentials sind `admin:admin123`. Ändere diese in der `docker-compose.yml` für Produktionsumgebungen!
+
+## API Endpoints
+
+### Health Check
+```
+GET /api/health
+```
+Testet die Verbindung zur MongoDB.
+
+## Technologie-Stack
+
+- **Framework**: Next.js 15 (App Router)
+- **UI**: React 19, shadcn/ui, Tailwind CSS
+- **Database**: MongoDB mit Mongoose ODM
+- **Containerization**: Docker & Docker Compose
+- **Theme**: next-themes mit Dark Mode Support
+
+## Entwicklung
+
+### Projekt-Struktur
+
+```
+fetchman/
+├── app/                    # Next.js App Router
+│   ├── api/               # API Routes
+│   ├── globals.css        # Globale Styles mit Theme-Variablen
+│   └── layout.tsx         # Root Layout
+├── components/            # React Komponenten
+│   ├── ui/               # shadcn/ui Komponenten
+│   ├── providers/        # Theme Provider
+│   ├── navigation.tsx    # Hauptnavigation
+│   └── theme-toggle.tsx  # Theme Switcher
+├── lib/                   # Utilities und Helpers
+│   ├── db/               # Datenbankverbindungen
+│   └── models/           # Mongoose Models
+└── docker-compose.yml     # Docker Services
+```
+
+### MongoDB Models
+
+#### Collection
+Speichert API-Collections mit mehreren Requests:
+- Name
+- Beschreibung
+- Requests Array (Name, Method, URL, Headers, Body)
+
+#### Environment
+Speichert Environment-Variablen:
+- Name
+- Variables (Key-Value Paare)
+- Beschreibung
+
+## Kommende Features
+
+- [ ] Request Builder UI
+- [ ] Collection Management
+- [ ] Environment Variables
+- [ ] Request History
+- [ ] Response Viewer
+- [ ] Authentication Support (OAuth, JWT, etc.)
+- [ ] Import/Export Collections
+- [ ] Websocket Testing
+- [ ] GraphQL Support
+
+## Lizenz
+
+MIT
