@@ -206,7 +206,7 @@ export function WorkspaceEnvironmentPanel({ workspaceId }: WorkspaceEnvironmentP
         </div>
       </div>
 
-      <div className="flex-1 overflow-auto px-6 py-4 space-y-4">
+      <div className="flex-1 overflow-auto space-y-4">
         {formError && (
           <div className="rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-sm text-destructive">
             {formError}
@@ -231,12 +231,12 @@ export function WorkspaceEnvironmentPanel({ workspaceId }: WorkspaceEnvironmentP
             </p>
           </div>
         ) : (
-          <div className="border rounded-md overflow-hidden">
+          <div className="border overflow-hidden">
             <div className="grid grid-cols-[1.5fr_2fr_120px_60px] bg-muted/40 text-xs font-medium uppercase text-muted-foreground">
               <div className="px-4 py-2">Key</div>
               <div className="px-4 py-2 border-l">Value</div>
               <div className="px-4 py-2 border-l">Secret</div>
-              <div className="px-4 py-2 border-l text-center">Aktion</div>
+              <div className="px-4 py-2 border-l text-center"></div>
             </div>
             <div>
               {variables.map((variable, index) => (
@@ -244,7 +244,7 @@ export function WorkspaceEnvironmentPanel({ workspaceId }: WorkspaceEnvironmentP
                   key={variable.id}
                   className="grid grid-cols-[1.5fr_2fr_120px_60px] border-t bg-background/60 hover:bg-muted/20"
                 >
-                  <div className="px-4 py-2 border-r">
+                  <div className="border-r">
                     <Label htmlFor={`env-key-${variable.id}`} className="sr-only">
                       Key
                     </Label>
@@ -255,10 +255,10 @@ export function WorkspaceEnvironmentPanel({ workspaceId }: WorkspaceEnvironmentP
                         handleVariableChange(index, "key", event.target.value)
                       }
                       placeholder="API_URL"
-                      className="h-9"
+                      className="h-9 border-none focus:ring-0 focus-visible:ring-0 radius-none"
                     />
                   </div>
-                  <div className="px-4 py-2 border-r">
+                  <div className="border-r">
                     <Label htmlFor={`env-value-${variable.id}`} className="sr-only">
                       Value
                     </Label>
@@ -271,7 +271,7 @@ export function WorkspaceEnvironmentPanel({ workspaceId }: WorkspaceEnvironmentP
                           handleVariableChange(index, "value", event.target.value)
                         }
                         placeholder={variable.isSecret ? "••••••••" : "https://api.example.com"}
-                        className="h-9"
+                        className="h-9 border-none focus:ring-0 focus-visible:ring-0 radius-none"
                       />
                       {variable.isSecret && (
                         <Button
@@ -295,7 +295,7 @@ export function WorkspaceEnvironmentPanel({ workspaceId }: WorkspaceEnvironmentP
                       </p>
                     )}
                   </div>
-                  <div className="px-4 py-2 border-r flex items-center gap-2">
+                  <div className="px-4 border-r flex items-center gap-2">
                     <input
                       id={`env-secret-${variable.id}`}
                       type="checkbox"
@@ -312,7 +312,7 @@ export function WorkspaceEnvironmentPanel({ workspaceId }: WorkspaceEnvironmentP
                       Geheim
                     </Label>
                   </div>
-                  <div className="px-4 py-2 flex items-center justify-center">
+                  <div className="px-4 flex items-center justify-center">
                     <Button
                       type="button"
                       variant="ghost"

@@ -10,6 +10,9 @@ import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Textarea } from '@/components/ui/textarea'
 import { WorkspaceTree } from './workspace-tree'
+import { useForm } from 'react-hook-form'
+import { z } from 'zod'
+import { zodResolver } from '@hookform/resolvers/zod'
 
 interface Workspace {
   _id: string
@@ -38,7 +41,19 @@ export function WorkspaceSidebar({
 }: WorkspaceSidebarProps) {
   const queryClient = useQueryClient()
   const [isCreateOpen, setIsCreateOpen] = useState(false)
-  const [newWorkspace, setNewWorkspace] = useState({ name: '', description: '' })
+
+  const formSchema = z.object({
+    name: z.string().min(1, 'Name ist erforderlich').max(100, 'Maximal 100 Zeichen'),
+    description: z.string().max(500, 'Maximal 500 Zeichen').optional().or(z.literal('')),
+  })
+
+  type FormValues = z.infer<typeof formSchema>
+
+  const form = useForm<FormValues>({
+    resolver: zodResolver(formSchema),
+    defaultValues: { name: '', description: '' },
+    mode: 'onChange',
+  })
 
   // Fetch workspaces with useQuery
   const { data: workspaces = [], isLoading } = useQuery({
@@ -52,7 +67,7 @@ export function WorkspaceSidebar({
 
   // Create workspace mutation
   const createMutation = useMutation({
-    mutationFn: async (workspace: { name: string; description: string }) => {
+    mutationFn: async (workspace: { name: string; description?: string }) => {
       const response = await fetch('/api/workspaces', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -63,14 +78,13 @@ export function WorkspaceSidebar({
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['workspaces'] })
-      setNewWorkspace({ name: '', description: '' })
+      form.reset({ name: '', description: '' })
       setIsCreateOpen(false)
     },
   })
 
-  const handleCreateWorkspace = () => {
-    if (!newWorkspace.name.trim()) return
-    createMutation.mutate(newWorkspace)
+  const onSubmit = (values: FormValues) => {
+    createMutation.mutate({ name: values.name.trim(), description: values.description?.trim() || '' })
   }
 
   return (
@@ -80,7 +94,11 @@ export function WorkspaceSidebar({
           <h2 className="text-lg font-semibold">Workspaces</h2>
           <Dialog open={isCreateOpen} onOpenChange={setIsCreateOpen}>
             <DialogTrigger asChild>
-              <Button size="sm" variant="ghost">
+              <Button
+                size="sm"
+                variant="ghost"
+                aria-label="Workspace erstellen"
+              >
                 <Plus className="h-4 w-4" />
               </Button>
             </DialogTrigger>
@@ -88,34 +106,49 @@ export function WorkspaceSidebar({
               <DialogHeader>
                 <DialogTitle>Neuer Workspace</DialogTitle>
               </DialogHeader>
-              <div className="space-y-4 pt-4">
+              <form
+                className="space-y-4 pt-4"
+                onSubmit={form.handleSubmit(onSubmit)}
+              >
                 <div className="space-y-2">
                   <Label htmlFor="name">Name</Label>
                   <Input
                     id="name"
-                    value={newWorkspace.name}
-                    onChange={(e) => setNewWorkspace({ ...newWorkspace, name: e.target.value })}
                     placeholder="Mein Workspace"
+                    aria-invalid={!!form.formState.errors.name}
+                    {...form.register("name")}
                   />
+                  {form.formState.errors.name && (
+                    <p className="text-sm text-destructive">
+                      {form.formState.errors.name.message}
+                    </p>
+                  )}
                 </div>
                 <div className="space-y-2">
                   <Label htmlFor="description">Beschreibung (optional)</Label>
                   <Textarea
                     id="description"
-                    value={newWorkspace.description}
-                    onChange={(e) => setNewWorkspace({ ...newWorkspace, description: e.target.value })}
                     placeholder="Workspace Beschreibung"
                     rows={3}
+                    aria-invalid={!!form.formState.errors.description}
+                    {...form.register("description")}
                   />
+                  {form.formState.errors.description && (
+                    <p className="text-sm text-destructive">
+                      {form.formState.errors.description.message}
+                    </p>
+                  )}
                 </div>
                 <Button
-                  onClick={handleCreateWorkspace}
-                  disabled={createMutation.isPending || !newWorkspace.name.trim()}
+                  type="submit"
+                  disabled={createMutation.isPending || !form.formState.isValid}
                   className="w-full"
                 >
-                  {createMutation.isPending ? 'Erstelle...' : 'Workspace erstellen'}
+                  {createMutation.isPending
+                    ? "Erstelle..."
+                    : "Workspace erstellen"}
                 </Button>
-              </div>
+              </form>
             </DialogContent>
           </Dialog>
         </div>
@@ -145,5 +178,5 @@ export function WorkspaceSidebar({
         </div>
       </ScrollArea>
     </div>
-  )
+  );
 }
