@@ -64,6 +64,7 @@ Erstelle eine `.env.local` Datei im Root-Verzeichnis:
 
 ```env
 MONGODB_URI=mongodb://admin:admin123@localhost:27017/fetchman?authSource=admin
+ENCRYPTION_KEY=your-32-char-encryption-key
 ```
 
 **Hinweis**: Die Standard-Credentials sind `admin:admin123`. Ändere diese in der `docker-compose.yml` für Produktionsumgebungen!
