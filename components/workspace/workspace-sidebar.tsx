@@ -1,33 +1,39 @@
-"use client"
+"use client";
 
-import { useState } from 'react'
-import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import { Plus } from 'lucide-react'
-import { Button } from '@/components/ui/button'
-import { ScrollArea } from '@/components/ui/scroll-area'
-import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from '@/components/ui/dialog'
-import { Input } from '@/components/ui/input'
-import { Label } from '@/components/ui/label'
-import { Textarea } from '@/components/ui/textarea'
-import { WorkspaceTree } from './workspace-tree'
-import { useForm } from 'react-hook-form'
-import { z } from 'zod'
-import { zodResolver } from '@hookform/resolvers/zod'
+import { useEffect, useRef, useState } from "react";
+import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
+import { Plus } from "lucide-react";
+import { Button } from "@/components/ui/button";
+import { ScrollArea } from "@/components/ui/scroll-area";
+import {
+  Dialog,
+  DialogContent,
+  DialogHeader,
+  DialogTitle,
+  DialogTrigger,
+} from "@/components/ui/dialog";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import { Textarea } from "@/components/ui/textarea";
+import { WorkspaceTree } from "./workspace-tree";
+import { useForm } from "react-hook-form";
+import { z } from "zod";
+import { zodResolver } from "@hookform/resolvers/zod";
 
 interface Workspace {
-  _id: string
-  name: string
-  description?: string
+  _id: string;
+  name: string;
+  description?: string;
 }
 
 interface WorkspaceSidebarProps {
-  onSelectWorkspace: (workspaceId: string) => void
-  onSelectFolder: (folderId: string) => void
-  onSelectRequest: (requestId: string) => void
-  selectedRequestId?: string
-  selectedWorkspaceId?: string
-  selectedFolderId?: string
-  selectedFolderPath?: string[]
+  onSelectWorkspace: (workspaceId: string) => void;
+  onSelectFolder: (folderId: string) => void;
+  onSelectRequest: (requestId: string) => void;
+  selectedRequestId?: string;
+  selectedWorkspaceId?: string;
+  selectedFolderId?: string;
+  selectedFolderPath?: string[];
 }
 
 export function WorkspaceSidebar({
@@ -39,58 +45,91 @@ export function WorkspaceSidebar({
   selectedFolderId,
   selectedFolderPath,
 }: WorkspaceSidebarProps) {
-  const queryClient = useQueryClient()
-  const [isCreateOpen, setIsCreateOpen] = useState(false)
+  const queryClient = useQueryClient();
+  const [isCreateOpen, setIsCreateOpen] = useState(false);
+  const [searchTerm, setSearchTerm] = useState("");
+  const searchRef = useRef<HTMLInputElement | null>(null);
 
   const formSchema = z.object({
-    name: z.string().min(1, 'Name ist erforderlich').max(100, 'Maximal 100 Zeichen'),
-    description: z.string().max(500, 'Maximal 500 Zeichen').optional().or(z.literal('')),
-  })
+    name: z
+      .string()
+      .min(1, "Name ist erforderlich")
+      .max(100, "Maximal 100 Zeichen"),
+    description: z
+      .string()
+      .max(500, "Maximal 500 Zeichen")
+      .optional()
+      .or(z.literal("")),
+  });
 
-  type FormValues = z.infer<typeof formSchema>
+  type FormValues = z.infer<typeof formSchema>;
 
   const form = useForm<FormValues>({
     resolver: zodResolver(formSchema),
-    defaultValues: { name: '', description: '' },
-    mode: 'onChange',
-  })
+    defaultValues: { name: "", description: "" },
+    mode: "onChange",
+  });
 
   // Fetch workspaces with useQuery
-  const { data: workspaces = [], isLoading } = useQuery({
-    queryKey: ['workspaces'],
+  const { data: workspaces = [] } = useQuery({
+    queryKey: ["workspaces"],
     queryFn: async () => {
-      const response = await fetch('/api/workspaces')
-      if (!response.ok) throw new Error('Failed to fetch workspaces')
-      return response.json() as Promise<Workspace[]>
+      const response = await fetch("/api/workspaces");
+      if (!response.ok) throw new Error("Failed to fetch workspaces");
+      return response.json() as Promise<Workspace[]>;
     },
     staleTime: 60_000,
     refetchOnMount: false,
     refetchOnReconnect: false,
     refetchOnWindowFocus: false,
     placeholderData: (previous) => previous,
-  })
+  });
 
   // Create workspace mutation
   const createMutation = useMutation({
     mutationFn: async (workspace: { name: string; description?: string }) => {
-      const response = await fetch('/api/workspaces', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+      const response = await fetch("/api/workspaces", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
         body: JSON.stringify(workspace),
-      })
-      if (!response.ok) throw new Error('Failed to create workspace')
-      return response.json()
+      });
+      if (!response.ok) throw new Error("Failed to create workspace");
+      return response.json();
     },
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['workspaces'] })
-      form.reset({ name: '', description: '' })
-      setIsCreateOpen(false)
+      queryClient.invalidateQueries({ queryKey: ["workspaces"] });
+      form.reset({ name: "", description: "" });
+      setIsCreateOpen(false);
     },
-  })
+  });
 
   const onSubmit = (values: FormValues) => {
-    createMutation.mutate({ name: values.name.trim(), description: values.description?.trim() || '' })
-  }
+    createMutation.mutate({
+      name: values.name.trim(),
+      description: values.description?.trim() || "",
+    });
+  };
+
+  // Keyboard shortcut: Cmd+K / Ctrl+K focuses search
+  useEffect(() => {
+    const handler = (e: KeyboardEvent) => {
+      const isMac = navigator.platform.toUpperCase().indexOf("MAC") >= 0;
+      const isShortcut =
+        (isMac && e.metaKey && e.key.toLowerCase() === "k") ||
+        (!isMac && e.ctrlKey && e.key.toLowerCase() === "k");
+      if (isShortcut) {
+        e.preventDefault();
+        searchRef.current?.focus();
+      }
+    };
+    window.addEventListener("keydown", handler);
+    return () => window.removeEventListener("keydown", handler);
+  }, []);
+
+  const normalizedSearch = searchTerm.trim().toLowerCase();
+  const filteredWorkspaces = normalizedSearch
+    ? workspaces.filter((w) => w.name.toLowerCase().includes(normalizedSearch))
+    : workspaces;
 
   return (
     <div className="flex flex-col h-full border-r bg-muted/10">
@@ -157,29 +196,33 @@ export function WorkspaceSidebar({
             </DialogContent>
           </Dialog>
         </div>
+        <div>
+          <Input
+            ref={searchRef}
+            value={searchTerm}
+            onChange={(e) => setSearchTerm(e.target.value)}
+            placeholder={"Suchen (⌘K / Ctrl+K)"}
+            className="h-8"
+          />
+        </div>
       </div>
 
       <ScrollArea className="flex-1">
         <div className="p-2">
-          {isLoading ? (
-            <div className="text-center text-sm text-muted-foreground py-4">
-              Lade Workspaces...
-            </div>
-          ) : (
-            workspaces.map((workspace) => (
-              <WorkspaceTree
-                key={workspace._id}
-                workspace={workspace}
-                onSelectWorkspace={onSelectWorkspace}
-                onSelectFolder={onSelectFolder}
-                onSelectRequest={onSelectRequest}
-                selectedRequestId={selectedRequestId}
-                selectedWorkspaceId={selectedWorkspaceId}
-                selectedFolderId={selectedFolderId}
-                selectedFolderPath={selectedFolderPath}
-              />
-            ))
-          )}
+          {filteredWorkspaces.map((workspace) => (
+            <WorkspaceTree
+              key={workspace._id}
+              workspace={workspace}
+              onSelectWorkspace={onSelectWorkspace}
+              onSelectFolder={onSelectFolder}
+              onSelectRequest={onSelectRequest}
+              selectedRequestId={selectedRequestId}
+              selectedWorkspaceId={selectedWorkspaceId}
+              selectedFolderId={selectedFolderId}
+              selectedFolderPath={selectedFolderPath}
+              searchTerm={normalizedSearch}
+            />
+          ))}
         </div>
       </ScrollArea>
     </div>

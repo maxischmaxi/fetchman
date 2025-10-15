@@ -16,7 +16,7 @@ const FETCHMAN_THEMES_FLAG = "__fetchmanMonacoThemesReady"
 const SAFE_META_KEYS = new Set(["a", "c", "v", "x", "z", "y", "f"])
 
 const defineFetchmanThemes = (monaco: Monaco) => {
-  if (typeof window !== "undefined" && (window as Record<string, unknown>)[FETCHMAN_THEMES_FLAG]) {
+  if (typeof window !== "undefined" && (window as unknown as Record<string, unknown>)[FETCHMAN_THEMES_FLAG]) {
     return
   }
 
@@ -81,7 +81,7 @@ const defineFetchmanThemes = (monaco: Monaco) => {
   })
 
   if (typeof window !== "undefined") {
-    (window as Record<string, unknown>)[FETCHMAN_THEMES_FLAG] = true
+    (window as unknown as Record<string, unknown>)[FETCHMAN_THEMES_FLAG] = true
   }
 }
 

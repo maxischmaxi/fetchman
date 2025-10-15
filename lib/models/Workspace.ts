@@ -1,5 +1,7 @@
 import mongoose, { Schema, Document, Types } from 'mongoose'
+import type { IWorkspaceDocument } from '@/lib/types'
 
+// Extend the shared interface with Mongoose Document
 export interface IWorkspace extends Document {
   _id: Types.ObjectId
   name: string

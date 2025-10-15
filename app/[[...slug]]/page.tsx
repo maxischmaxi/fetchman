@@ -1,333 +1,128 @@
-"use client";
+import { HydrationBoundary, dehydrate, QueryClient } from "@tanstack/react-query";
+import { headers } from "next/headers";
+import { WorkspacePageClient } from "@/components/workspace/workspace-page-client";
+import type { IWorkspace, IFolder, IRequest } from "@/lib/types";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
-import { useParams, useRouter, useSearchParams } from "next/navigation";
-import { WorkspaceSidebar } from "@/components/workspace/workspace-sidebar";
-import { RequestBuilder } from "@/components/workspace/request-builder";
-import { WorkspaceEnvironmentPanel } from "@/components/workspace/workspace-environment";
-import { FolderOverview } from "@/components/workspace/folder-overview";
+type Params = { params: Promise<{ slug?: string[] }> };
 
-type RouteState = {
-  workspaceId?: string;
-  folderPath: string[];
-  requestId?: string;
-};
+async function getRequest(baseUrl: string, requestId: string): Promise<IRequest | undefined> {
+  const res = await fetch(`${baseUrl}/api/requests/${requestId}`, {
+    cache: "no-store",
+    // Next.js will still route correctly without absolute URL in most cases, but allow override
+  });
+  if (!res.ok) return undefined;
+  return res.json();
+}
 
-const inferRouteState = async (
-  slug: string[],
-  signal?: AbortSignal,
-): Promise<RouteState> => {
-  if (slug.length === 0) {
-    return { folderPath: [] };
-  }
+async function getFolder(baseUrl: string, folderId: string): Promise<IFolder | undefined> {
+  const res = await fetch(`${baseUrl}/api/folders/${folderId}`, {
+    cache: "no-store",
+  });
+  if (!res.ok) return undefined;
+  return res.json();
+}
 
+async function getWorkspaces(baseUrl: string): Promise<IWorkspace[]> {
+  const res = await fetch(`${baseUrl}/api/workspaces`, {
+    cache: "no-store",
+  });
+  if (!res.ok) return [];
+  return res.json();
+}
+
+async function getFoldersByWorkspace(baseUrl: string, workspaceId: string): Promise<IFolder[]> {
+  const res = await fetch(`${baseUrl}/api/folders?workspaceId=${workspaceId}`, {
+    cache: "no-store",
+  });
+  if (!res.ok) return [];
+  return res.json();
+}
+
+async function getRequestsByWorkspace(baseUrl: string, workspaceId: string): Promise<IRequest[]> {
+  const res = await fetch(`${baseUrl}/api/requests?workspaceId=${workspaceId}`, {
+    cache: "no-store",
+  });
+  if (!res.ok) return [];
+  return res.json();
+}
+
+function inferFromSlug(slug: string[]) {
+  if (slug.length === 0) return { workspaceId: undefined as string | undefined, folderPath: [] as string[], requestId: undefined as string | undefined };
   const workspaceId = slug[0];
-  if (slug.length === 1) {
-    return { workspaceId, folderPath: [] };
-  }
-
+  if (slug.length === 1) return { workspaceId, folderPath: [] as string[], requestId: undefined as string | undefined };
   const rest = slug.slice(1);
   const candidateRequestId = rest[rest.length - 1];
+  return { workspaceId, folderPath: rest, requestId: candidateRequestId };
+}
 
-  try {
-    const res = await fetch(`/api/requests/${candidateRequestId}`, {
-      method: "GET",
-      cache: "no-store",
-      signal,
-    });
-
-    if (res.ok) {
-      const data = await res.json();
-      const normalizedWorkspaceId =
-        typeof data.workspaceId === "string"
-          ? data.workspaceId
-          : data.workspaceId?._id || data.workspaceId?.toString?.();
-
-      const folderPath = rest.slice(0, -1);
-      return {
-        workspaceId: normalizedWorkspaceId || workspaceId,
-        folderPath,
-        requestId: data._id,
-      };
-    }
-  } catch (error) {
-    if ((error as Error).name === "AbortError") {
-      throw error;
-    }
-    console.error("Error inferring route state:", error);
-  }
-
-  return {
-    workspaceId,
-    folderPath: rest,
-  };
-};
-
-const resolveFolderPath = async (
-  folderId?: string | null,
-): Promise<{ path: string[]; workspaceId?: string }> => {
-  if (!folderId) return { path: [], workspaceId: undefined };
-
+async function resolveFolderPathServer(baseUrl: string, folderId?: string | null) {
+  if (!folderId) return { path: [] as string[], workspaceId: undefined as string | undefined };
   const path: string[] = [];
-  let currentId: string | undefined | null = folderId;
+  let current: string | undefined | null = folderId;
   let resolvedWorkspace: string | undefined;
+  while (current) {
+    const folder = await getFolder(baseUrl, current);
+    if (!folder) break;
+    if (!resolvedWorkspace) resolvedWorkspace = folder.workspaceId;
+    path.unshift(folder._id);
+    current = folder.parentFolderId || undefined;
+  }
+  return { path, workspaceId: resolvedWorkspace };
+}
 
-  while (currentId) {
-    const res = await fetch(`/api/folders/${currentId}`, {
-      method: "GET",
-      cache: "no-store",
-    });
+export default async function WorkspacePage({ params }: Params) {
+  const h = await headers();
+  const forwardedHost = h.get("x-forwarded-host");
+  const host = forwardedHost || h.get("host");
+  const proto = h.get("x-forwarded-proto") || "http";
+  const baseUrl = host
+    ? `${proto}://${host}`
+    : process.env.NEXT_PUBLIC_BASE_URL || (process.env.VERCEL_URL ? `https://${process.env.VERCEL_URL}` : "http://localhost:3000");
 
-    if (!res.ok) break;
+  const resolvedParams = await params;
+  const slug: string[] = Array.isArray(resolvedParams?.slug)
+    ? resolvedParams.slug.filter(Boolean)
+    : resolvedParams?.slug
+    ? [resolvedParams.slug].filter(Boolean)
+    : [];
+  const rough = inferFromSlug(slug);
 
-    const data = await res.json();
-    const folderWorkspaceId =
-      typeof data.workspaceId === "string"
-        ? data.workspaceId
-        : data.workspaceId?._id || data.workspaceId?.toString?.();
+  let selectedWorkspaceId = rough.workspaceId;
+  let selectedFolderPath: string[] = rough.folderPath;
+  let selectedRequestId: string | undefined = undefined;
 
-    if (!resolvedWorkspace && folderWorkspaceId) {
-      resolvedWorkspace = folderWorkspaceId;
+  if (rough.requestId) {
+    const req = await getRequest(baseUrl, rough.requestId);
+    if (req) {
+      const { path } = await resolveFolderPathServer(baseUrl, req.folderId);
+      selectedWorkspaceId = req.workspaceId || selectedWorkspaceId;
+      selectedFolderPath = path;
+      selectedRequestId = req._id;
     }
-
-    path.unshift(data._id);
-    currentId = data.parentFolderId || undefined;
   }
 
-  return { path, workspaceId: resolvedWorkspace };
-};
+  const [workspaces, folders, requests] = await Promise.all([
+    getWorkspaces(baseUrl),
+    selectedWorkspaceId ? getFoldersByWorkspace(baseUrl, selectedWorkspaceId) : Promise.resolve([]),
+    selectedWorkspaceId ? getRequestsByWorkspace(baseUrl, selectedWorkspaceId) : Promise.resolve([]),
+  ]);
 
-export default function WorkspacePage() {
-  const params = useParams<{ slug?: string[] }>();
-  const router = useRouter();
-  const searchParams = useSearchParams();
+  const queryClient = new QueryClient();
+  queryClient.setQueryData(["workspaces"], workspaces);
+  if (selectedWorkspaceId) {
+    queryClient.setQueryData(["folders", selectedWorkspaceId], folders);
+    queryClient.setQueryData(["requests", selectedWorkspaceId], requests);
+  }
 
-  const slug = useMemo(() => {
-    const value = params?.slug;
-    if (!value) return [] as string[];
-    if (Array.isArray(value)) return value.filter(Boolean);
-    return value ? [value] : [];
-  }, [params]);
-
-  const slugKey = slug.join("/");
-
-  const [selectedWorkspaceId, setSelectedWorkspaceId] = useState<
-    string | undefined
-  >();
-  const [selectedFolderPath, setSelectedFolderPath] = useState<string[]>([]);
-  const [selectedRequestId, setSelectedRequestId] = useState<
-    string | undefined
-  >();
-
-  useEffect(() => {
-    const abortController = new AbortController();
-    const hydrateFromSlug = async () => {
-      try {
-        const state = await inferRouteState(slug, abortController.signal);
-        if (abortController.signal.aborted) return;
-
-        setSelectedWorkspaceId(state.workspaceId);
-        setSelectedFolderPath(state.folderPath);
-        setSelectedRequestId(state.requestId);
-      } catch (error) {
-        if ((error as Error).name !== "AbortError") {
-          console.error("Error resolving route state:", error);
-        }
-      }
-    };
-
-    hydrateFromSlug();
-
-    return () => {
-      abortController.abort();
-    };
-  }, [slugKey, slug]);
-
-  const navigateToRequest = useCallback(
-    async (requestId: string) => {
-      try {
-        const res = await fetch(`/api/requests/${requestId}`, {
-          method: "GET",
-          cache: "no-store",
-        });
-
-        if (!res.ok) {
-          throw new Error("Failed to resolve request for navigation");
-        }
-
-        const data = await res.json();
-        const resolvedWorkspaceId =
-          typeof data.workspaceId === "string"
-            ? data.workspaceId
-            : data.workspaceId?._id || data.workspaceId?.toString?.();
-
-        if (!resolvedWorkspaceId) {
-          throw new Error("Request is missing a workspace reference");
-        }
-
-        const { path: folderSegments } = await resolveFolderPath(data.folderId);
-
-        const segments = [
-          resolvedWorkspaceId,
-          ...folderSegments,
-          requestId,
-        ].filter(Boolean);
-        const basePath = `/${segments.join("/")}`;
-
-        const nextSearchParams = new URLSearchParams(searchParams);
-        const search = nextSearchParams.toString();
-
-        setSelectedWorkspaceId(resolvedWorkspaceId);
-        setSelectedFolderPath(folderSegments);
-        setSelectedRequestId(requestId);
-
-        router.push(search ? `${basePath}?${search}` : basePath, {
-          scroll: false,
-        });
-      } catch (error) {
-        console.error("Error navigating to request:", error);
-      }
-    },
-    [router, searchParams],
-  );
-
-  const handleSelectRequest = useCallback(
-    (requestId: string) => {
-      navigateToRequest(requestId);
-    },
-    [navigateToRequest],
-  );
-
-  const navigateToWorkspace = useCallback(
-    (workspaceId: string) => {
-      const nextSearchParams = new URLSearchParams(searchParams);
-      nextSearchParams.delete("tab");
-      const search = nextSearchParams.toString();
-
-      setSelectedWorkspaceId(workspaceId);
-      setSelectedFolderPath([]);
-      setSelectedRequestId(undefined);
-
-      router.push(search ? `/${workspaceId}?${search}` : `/${workspaceId}`, {
-        scroll: false,
-      });
-    },
-    [router, searchParams],
-  );
-
-  const navigateToFolder = useCallback(
-    async (folderId: string) => {
-      try {
-        const { path, workspaceId } = await resolveFolderPath(folderId);
-        const resolvedWorkspace = workspaceId || selectedWorkspaceId;
-
-        if (!resolvedWorkspace) {
-          throw new Error("Unable to resolve workspace for selected folder");
-        }
-
-        const segments = [resolvedWorkspace, ...path].filter(Boolean);
-        const basePath = `/${segments.join("/")}`;
-
-        const nextSearchParams = new URLSearchParams(searchParams);
-        nextSearchParams.delete("tab");
-        const search = nextSearchParams.toString();
-
-        setSelectedWorkspaceId(resolvedWorkspace);
-        setSelectedFolderPath(path);
-        setSelectedRequestId(undefined);
-
-        router.push(search ? `${basePath}?${search}` : basePath, {
-          scroll: false,
-        });
-      } catch (error) {
-        console.error("Error navigating to folder:", error);
-      }
-    },
-    [router, searchParams, selectedWorkspaceId],
-  );
-
-  const handleSelectWorkspace = useCallback(
-    (workspaceId: string) => {
-      navigateToWorkspace(workspaceId);
-    },
-    [navigateToWorkspace],
-  );
-
-  const handleSelectFolder = useCallback(
-    (folderId: string) => {
-      navigateToFolder(folderId);
-    },
-    [navigateToFolder],
-  );
-
-  const activeFolderId = selectedFolderPath[selectedFolderPath.length - 1];
-  const showFolderOverview = Boolean(activeFolderId) && !selectedRequestId;
-  const showWorkspaceEnvironment =
-    Boolean(selectedWorkspaceId) && !selectedRequestId && !showFolderOverview;
+  const dehydratedState = dehydrate(queryClient);
 
   return (
-    <div className="flex h-screen overflow-hidden">
-      <div className="w-80">
-        <WorkspaceSidebar
-          onSelectRequest={handleSelectRequest}
-          onSelectWorkspace={handleSelectWorkspace}
-          onSelectFolder={handleSelectFolder}
-          selectedRequestId={selectedRequestId}
-          selectedWorkspaceId={selectedWorkspaceId}
-          selectedFolderId={activeFolderId}
-          selectedFolderPath={selectedFolderPath}
-        />
-      </div>
-      <div className="flex-1 overflow-hidden">
-        {selectedRequestId && <RequestBuilder requestId={selectedRequestId} />}
-
-        {!selectedRequestId &&
-          showFolderOverview &&
-          activeFolderId &&
-          selectedWorkspaceId && (
-            <FolderOverview
-              folderId={activeFolderId}
-              workspaceId={selectedWorkspaceId}
-              onOpenRequest={handleSelectRequest}
-              onOpenFolder={handleSelectFolder}
-            />
-          )}
-
-        {!selectedRequestId &&
-          !showFolderOverview &&
-          showWorkspaceEnvironment &&
-          selectedWorkspaceId && (
-            <WorkspaceEnvironmentPanel workspaceId={selectedWorkspaceId} />
-          )}
-
-        {!selectedRequestId &&
-          showFolderOverview &&
-          (!activeFolderId || !selectedWorkspaceId) && (
-            <div className="flex h-full items-center justify-center">
-              <div className="text-center space-y-2">
-                <h2 className="text-2xl font-bold">
-                  Ordner konnte nicht geladen werden
-                </h2>
-                <p className="text-muted-foreground">
-                  Bitte wähle einen gültigen Ordner aus der linken Navigation.
-                </p>
-              </div>
-            </div>
-          )}
-
-        {!selectedRequestId &&
-          !showFolderOverview &&
-          !showWorkspaceEnvironment && (
-            <div className="flex h-full items-center justify-center">
-              <div className="text-center space-y-2">
-                <h2 className="text-2xl font-bold">Willkommen bei Fetchman</h2>
-                <p className="text-muted-foreground">
-                  Wähle einen Workspace aus oder erstelle einen neuen.
-                </p>
-              </div>
-            </div>
-          )}
-      </div>
-    </div>
+    <HydrationBoundary state={dehydratedState}>
+      <WorkspacePageClient
+        initialWorkspaceId={selectedWorkspaceId}
+        initialFolderPath={selectedFolderPath}
+        initialRequestId={selectedRequestId}
+      />
+    </HydrationBoundary>
   );
 }

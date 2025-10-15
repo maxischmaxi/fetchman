@@ -1,35 +1,20 @@
 "use client"
 
 import { useState, useEffect, useCallback } from 'react'
+import Link from 'next/link'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import { ChevronRight, ChevronDown, Folder, FolderPlus, FilePlus, MoreHorizontal, Trash2 } from 'lucide-react'
+import { ChevronRight, ChevronDown, Folder, FolderPlus, FilePlus, MoreHorizontal, Trash2, Trash } from 'lucide-react'
 import { Button } from '@/components/ui/button'
-import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog'
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from '@/components/ui/dialog'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
-import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from '@/components/ui/dropdown-menu'
+import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger } from '@/components/ui/dropdown-menu'
 import { Badge } from '@/components/ui/badge'
+import type { IWorkspace, IFolder, IRequest, CreateFolderDto, CreateRequestDto } from '@/lib/types'
 
-interface Workspace {
-  _id: string
-  name: string
-  description?: string
-}
-
-interface Folder {
-  _id: string
-  name: string
-  workspaceId: string
-  parentFolderId?: string
-}
-
-interface Request {
-  _id: string
-  name: string
-  method: string
-  workspaceId: string
-  folderId?: string
-}
+interface Workspace extends IWorkspace {}
+interface Folder extends IFolder {}
+interface Request extends IRequest {}
 
 interface WorkspaceTreeProps {
   workspace: Workspace
@@ -40,6 +25,9 @@ interface WorkspaceTreeProps {
   selectedWorkspaceId?: string
   selectedFolderId?: string
   selectedFolderPath?: string[]
+  initialFolders?: Folder[]
+  initialRequests?: Request[]
+  searchTerm?: string
 }
 
 export function WorkspaceTree({
@@ -51,6 +39,9 @@ export function WorkspaceTree({
   selectedWorkspaceId,
   selectedFolderId,
   selectedFolderPath = [],
+  initialFolders,
+  initialRequests,
+  searchTerm = '',
 }: WorkspaceTreeProps) {
   const queryClient = useQueryClient()
   const [isExpanded, setIsExpanded] = useState(selectedWorkspaceId === workspace._id)
@@ -58,6 +49,7 @@ export function WorkspaceTree({
   const [dialogType, setDialogType] = useState<'folder' | 'request'>('folder')
   const [newItemName, setNewItemName] = useState('')
   const [targetFolderId, setTargetFolderId] = useState<string | undefined>()
+  const [workspaceDeleteDialogOpen, setWorkspaceDeleteDialogOpen] = useState(false)
 
   useEffect(() => {
     if (selectedWorkspaceId === workspace._id) {
@@ -110,6 +102,7 @@ export function WorkspaceTree({
     refetchOnReconnect: false,
     refetchOnWindowFocus: false,
     placeholderData: (previous) => previous,
+    initialData: initialFolders,
   })
 
   // Fetch requests
@@ -122,18 +115,19 @@ export function WorkspaceTree({
     refetchOnReconnect: false,
     refetchOnWindowFocus: false,
     placeholderData: (previous) => previous,
+    initialData: initialRequests,
   })
 
   // Create folder mutation
   const createFolderMutation = useMutation({
-    mutationFn: async (data: { name: string; workspaceId: string; parentFolderId?: string }) => {
+    mutationFn: async (data: CreateFolderDto) => {
       const response = await fetch('/api/folders', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(data),
       })
       if (!response.ok) throw new Error('Failed to create folder')
-      return response.json()
+      return response.json() as Promise<Folder>
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['folders', workspace._id] })
@@ -144,14 +138,14 @@ export function WorkspaceTree({
 
   // Create request mutation
   const createRequestMutation = useMutation({
-    mutationFn: async (data: { name: string; method: string; url: string; workspaceId: string; folderId?: string; headers: any[]; queryParams: any[] }) => {
+    mutationFn: async (data: CreateRequestDto) => {
       const response = await fetch('/api/requests', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(data),
       })
       if (!response.ok) throw new Error('Failed to create request')
-      return response.json()
+      return response.json() as Promise<Request>
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['requests', workspace._id] })
@@ -200,8 +194,14 @@ export function WorkspaceTree({
     return colors[method] || 'bg-gray-500/10 text-gray-500 border-gray-500/20'
   }
 
-  const rootFolders = folders.filter(f => !f.parentFolderId)
-  const rootRequests = requests.filter(r => !r.folderId)
+  const matchesSearch = (value?: string) =>
+    searchTerm ? (value || '').toLowerCase().includes(searchTerm) : true
+  const rootFolders = folders
+    .filter(f => !f.parentFolderId)
+    .filter(f => matchesSearch(f.name))
+  const rootRequests = requests
+    .filter(r => !r.folderId)
+    .filter(r => matchesSearch(r.name) || matchesSearch(r.method))
   const isWorkspaceActive =
     selectedWorkspaceId === workspace._id && !selectedFolderId && !selectedRequestId
 
@@ -233,24 +233,40 @@ export function WorkspaceTree({
         >
           {isExpanded ? <ChevronDown className="h-4 w-4" /> : <ChevronRight className="h-4 w-4" />}
         </Button>
-        <span className="flex-1 text-sm font-medium">{workspace.name}</span>
-        <div className="opacity-0 group-hover:opacity-100 flex gap-1">
-          <Button
-            variant="ghost"
-            size="sm"
-            className="h-6 w-6 p-0"
-            onClick={() => openDialog('folder')}
-          >
-            <FolderPlus className="h-3.5 w-3.5" />
-          </Button>
-          <Button
-            variant="ghost"
-            size="sm"
-            className="h-6 w-6 p-0"
-            onClick={() => openDialog('request')}
-          >
-            <FilePlus className="h-3.5 w-3.5" />
-          </Button>
+        <span className="flex-1 text-sm font-medium">
+          <Link href={`/${workspace._id}`} scroll={false} prefetch className="hover:underline">
+            {workspace.name}
+          </Link>
+        </span>
+        <div className="opacity-0 group-hover:opacity-100">
+          <DropdownMenu>
+            <DropdownMenuTrigger asChild>
+              <Button variant="ghost" size="sm" className="h-6 w-6 p-0">
+                <MoreHorizontal className="h-3.5 w-3.5" />
+              </Button>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent>
+              <DropdownMenuItem onClick={() => openDialog('folder')}>
+                <FolderPlus className="h-4 w-4 mr-2" />
+                Ordner hinzufügen
+              </DropdownMenuItem>
+              <DropdownMenuItem onClick={() => openDialog('request')}>
+                <FilePlus className="h-4 w-4 mr-2" />
+                Request hinzufügen
+              </DropdownMenuItem>
+              <DropdownMenuSeparator />
+              <DropdownMenuItem
+                onClick={(event) => {
+                  event.stopPropagation()
+                  setWorkspaceDeleteDialogOpen(true)
+                }}
+                className="text-destructive focus:text-destructive"
+              >
+                <Trash className="h-4 w-4 mr-2" />
+                Workspace löschen
+              </DropdownMenuItem>
+            </DropdownMenuContent>
+          </DropdownMenu>
         </div>
       </div>
 
@@ -316,6 +332,37 @@ export function WorkspaceTree({
           </div>
         </DialogContent>
       </Dialog>
+
+      <Dialog open={workspaceDeleteDialogOpen} onOpenChange={setWorkspaceDeleteDialogOpen}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Workspace löschen</DialogTitle>
+          </DialogHeader>
+          <div className="space-y-2">
+            <p className="text-sm text-muted-foreground">
+              Möchtest du den Workspace „{workspace.name}” inklusive aller Ordner und Requests wirklich löschen? Dieser Vorgang kann nicht rückgängig gemacht werden.
+            </p>
+          </div>
+          <DialogFooter>
+            <Button variant="ghost" onClick={() => setWorkspaceDeleteDialogOpen(false)}>
+              Abbrechen
+            </Button>
+            <Button
+              variant="destructive"
+              onClick={async () => {
+                try {
+                  await fetch(`/api/workspaces/${workspace._id}`, { method: 'DELETE' })
+                  queryClient.invalidateQueries({ queryKey: ['workspaces'] })
+                } finally {
+                  setWorkspaceDeleteDialogOpen(false)
+                }
+              }}
+            >
+              Löschen
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   )
 }
@@ -332,6 +379,7 @@ function FolderItem({
   onCreateFolder,
   onCreateRequest,
   workspaceId,
+  searchTerm = '',
 }: {
   folder: Folder
   allFolders: Folder[]
@@ -344,13 +392,16 @@ function FolderItem({
   onCreateFolder: (folderId: string) => void
   onCreateRequest: (folderId: string) => void
   workspaceId: string
+  searchTerm?: string
 }) {
   const queryClient = useQueryClient()
+  const [isDeleteDialogOpen, setIsDeleteDialogOpen] = useState(false)
   const shouldBeExpanded =
     selectedFolderId === folder._id || selectedFolderPath.includes(folder._id)
   const [isExpanded, setIsExpanded] = useState(shouldBeExpanded)
-  const isSelected = selectedFolderId === folder._id
-  const isInActivePath = !isSelected && selectedFolderPath.includes(folder._id)
+  const isSelectedFolder = selectedFolderId === folder._id && !selectedRequestId
+  const isInActivePath =
+    !isSelectedFolder && selectedFolderPath.includes(folder._id) && !selectedRequestId
 
   const prefetchFolderData = useCallback(() => {
     queryClient.prefetchQuery({
@@ -387,8 +438,14 @@ function FolderItem({
     onSelectFolder(folder._id)
   }, [onSelectFolder, prefetchFolderData, folder._id])
 
-  const childFolders = allFolders.filter(f => f.parentFolderId === folder._id)
-  const childRequests = allRequests.filter(r => r.folderId === folder._id)
+  const matchesSearch = (value?: string) =>
+    (searchTerm || '') ? (value || '').toLowerCase().includes((searchTerm || '')) : true
+  const childFolders = allFolders
+    .filter(f => f.parentFolderId === folder._id)
+    .filter(f => matchesSearch(f.name))
+  const childRequests = allRequests
+    .filter(r => r.folderId === folder._id)
+    .filter(r => matchesSearch(r.name) || matchesSearch(r.method))
 
   useEffect(() => {
     if (shouldBeExpanded) {
@@ -412,15 +469,14 @@ function FolderItem({
   })
 
   const handleDelete = () => {
-    if (!confirm('Ordner und alle Inhalte löschen?')) return
-    deleteFolderMutation.mutate(folder._id)
+    setIsDeleteDialogOpen(true)
   }
 
   return (
     <div>
       <div
         className={`group flex items-center gap-1 p-2 rounded-md hover:bg-accent cursor-pointer ${
-          isSelected ? 'bg-accent text-foreground' : isInActivePath ? 'bg-muted/40' : ''
+          isSelectedFolder ? 'bg-accent text-foreground' : isInActivePath ? 'bg-muted/40' : ''
         }`}
         onClick={handleFolderSelect}
         onMouseEnter={prefetchFolderData}
@@ -495,6 +551,7 @@ function FolderItem({
               onCreateFolder={onCreateFolder}
               onCreateRequest={onCreateRequest}
               workspaceId={workspaceId}
+              searchTerm={searchTerm}
             />
           ))}
           {childRequests.map(request => (
@@ -508,6 +565,34 @@ function FolderItem({
           ))}
         </div>
       )}
+
+      <Dialog open={isDeleteDialogOpen} onOpenChange={setIsDeleteDialogOpen}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Ordner löschen</DialogTitle>
+          </DialogHeader>
+          <div className="space-y-2">
+            <p className="text-sm text-muted-foreground">
+              Möchtest du den Ordner „{folder.name}” und alle enthaltenen Unterordner und Requests wirklich löschen? Dieser Vorgang kann nicht rückgängig gemacht werden.
+            </p>
+          </div>
+          <DialogFooter>
+            <Button variant="ghost" onClick={() => setIsDeleteDialogOpen(false)}>
+              Abbrechen
+            </Button>
+            <Button
+              variant="destructive"
+              onClick={() => {
+                deleteFolderMutation.mutate(folder._id)
+                setIsDeleteDialogOpen(false)
+              }}
+              disabled={deleteFolderMutation.isPending}
+            >
+              {deleteFolderMutation.isPending ? 'Lösche…' : 'Löschen'}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   )
 }
@@ -524,6 +609,7 @@ function RequestItem({
   workspaceId: string
 }) {
   const queryClient = useQueryClient()
+  const [isDeleteDialogOpen, setIsDeleteDialogOpen] = useState(false)
 
   const getMethodColor = (method: string) => {
     const colors: Record<string, string> = {
@@ -552,8 +638,7 @@ function RequestItem({
 
   const handleDelete = (e: React.MouseEvent) => {
     e.stopPropagation()
-    if (!confirm('Request löschen?')) return
-    deleteRequestMutation.mutate(request._id)
+    setIsDeleteDialogOpen(true)
   }
 
   return (
@@ -566,7 +651,11 @@ function RequestItem({
       <Badge variant="outline" className={`text-xs font-mono px-1.5 py-0 ${getMethodColor(request.method)}`}>
         {request.method}
       </Badge>
-      <span className="flex-1 text-sm truncate">{request.name}</span>
+      <span className="flex-1 text-sm truncate">
+        <Link href={`/${workspaceId}/${request.folderId ? `${request.folderId}/` : ''}${request._id}`} scroll={false} prefetch className="hover:underline">
+          {request.name}
+        </Link>
+      </span>
       <div className="opacity-0 group-hover:opacity-100">
         <DropdownMenu>
           <DropdownMenuTrigger asChild>
@@ -582,6 +671,35 @@ function RequestItem({
           </DropdownMenuContent>
         </DropdownMenu>
       </div>
+
+      <Dialog open={isDeleteDialogOpen} onOpenChange={setIsDeleteDialogOpen}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Request löschen</DialogTitle>
+          </DialogHeader>
+          <div className="space-y-2">
+            <p className="text-sm text-muted-foreground">
+              Möchtest du den Request „{request.name}” wirklich löschen? Dieser Vorgang kann nicht rückgängig gemacht werden.
+            </p>
+          </div>
+          <DialogFooter>
+            <Button variant="ghost" onClick={() => setIsDeleteDialogOpen(false)}>
+              Abbrechen
+            </Button>
+            <Button
+              variant="destructive"
+              onClick={(ev) => {
+                ev.stopPropagation()
+                deleteRequestMutation.mutate(request._id)
+                setIsDeleteDialogOpen(false)
+              }}
+              disabled={deleteRequestMutation.isPending}
+            >
+              {deleteRequestMutation.isPending ? 'Lösche…' : 'Löschen'}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   )
 }

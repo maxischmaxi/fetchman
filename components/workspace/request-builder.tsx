@@ -1,7 +1,7 @@
 "use client";
 
 import Image from "next/image";
-import { useState, useEffect, useCallback, useMemo } from "react";
+import { useState, useEffect, useCallback, useMemo, useRef } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { Send, Trash2, Save, Loader2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
@@ -19,6 +19,11 @@ import { Label } from "@/components/ui/label";
 import { Badge } from "@/components/ui/badge";
 import { CodeEditor } from "@/components/ui/code-editor";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
+import {
+  ResizablePanelGroup,
+  ResizablePanel,
+  ResizableHandle,
+} from "@/components/ui/resizable";
 
 const TAB_VALUES = [
   "params",
@@ -208,15 +213,34 @@ export function RequestBuilder({ requestId }: RequestBuilderProps) {
     return initial && TAB_SET.has(initial) ? initial : DEFAULT_TAB;
   });
 
+  const tabUpdateTimeoutRef = useRef<number | null>(null);
+
   const persistTabInUrl = useCallback(
     (value: string) => {
-      if (searchParams.get("tab") === value) return;
-      const nextSearch = new URLSearchParams(searchParams);
-      nextSearch.set("tab", value);
-      const query = nextSearch.toString();
-      router.replace(query ? `${pathname}?${query}` : pathname, {
-        scroll: false,
-      });
+      // Update URL asynchronously to avoid full router navigation cost
+      if (typeof window === "undefined") return;
+
+      // Clear pending update
+      if (tabUpdateTimeoutRef.current) {
+        window.clearTimeout(tabUpdateTimeoutRef.current);
+        tabUpdateTimeoutRef.current = null;
+      }
+
+      tabUpdateTimeoutRef.current = window.setTimeout(() => {
+        try {
+          const url = new URL(window.location.href);
+          url.searchParams.set("tab", value);
+          window.history.replaceState({}, "", url.toString());
+        } catch {
+          // Fallback to router if URL API fails for any reason
+          const nextSearch = new URLSearchParams(searchParams);
+          nextSearch.set("tab", value);
+          const query = nextSearch.toString();
+          router.replace(query ? `${pathname}?${query}` : pathname, {
+            scroll: false,
+          });
+        }
+      }, 120);
     },
     [pathname, router, searchParams],
   );
@@ -237,6 +261,7 @@ export function RequestBuilder({ requestId }: RequestBuilderProps) {
 
     if (fromQuery && !TAB_SET.has(fromQuery)) {
       setActiveTab(DEFAULT_TAB);
+      // Don't immediately trigger a router update here; let async persist handle it
       persistTabInUrl(DEFAULT_TAB);
     }
   }, [activeTab, persistTabInUrl, searchParams]);
@@ -347,11 +372,10 @@ export function RequestBuilder({ requestId }: RequestBuilderProps) {
       if (!res.ok) throw new Error("Failed to fetch request");
       const data = await res.json();
 
-      // Parse URL and sync query params
+      // Parse URL and sync query params (keep URL intact, including its query string)
       const parsedParams = parseUrlParams(data.url);
       if (parsedParams.length > 0) {
-        data.queryParams = parsedParams;
-        data.url = data.url.split("?")[0]; // Store base URL
+        data.queryParams = mergeParamsPreferUrl(parsedParams, data.queryParams);
       }
 
       return data as Request;
@@ -594,16 +618,75 @@ export function RequestBuilder({ requestId }: RequestBuilderProps) {
     });
   };
 
+  // Merge URL-derived params into existing table, preferring URL values
+  const mergeParamsPreferUrl = (
+    fromUrl: QueryParam[],
+    existing: QueryParam[] | undefined,
+  ): QueryParam[] => {
+    const existingByKey = new Map(
+      (existing || []).map((p) => [p.key, { ...p }]),
+    );
+    fromUrl.forEach((p) => {
+      const current = existingByKey.get(p.key);
+      if (current) {
+        existingByKey.set(p.key, {
+          ...current,
+          value: p.value,
+          enabled: true,
+        });
+      } else {
+        existingByKey.set(p.key, { ...p, enabled: true });
+      }
+    });
+    return Array.from(existingByKey.values());
+  };
+
+  // Sync params table from URL on blur
+  const syncParamsFromUrl = useCallback(
+    (urlStr: string) => {
+      if (!localRequest) return;
+      const parsed = parseUrlParams(urlStr);
+      if (parsed.length === 0) return;
+      setLocalRequest((prev) =>
+        prev
+          ? {
+              ...prev,
+              queryParams: mergeParamsPreferUrl(parsed, prev.queryParams),
+            }
+          : prev,
+      );
+    },
+    [localRequest],
+  );
+
   const handleSave = () => {
     if (!localRequest) return;
-    saveMutation.mutate(localRequest);
+    // Rebuild URL from enabled params before saving
+    const urlWithoutParams = localRequest.url.split("?")[0];
+    const enabledParams = localRequest.queryParams.filter((p) => p.enabled && p.key);
+    const rebuiltUrl =
+      enabledParams.length > 0
+        ? `${urlWithoutParams}?${enabledParams
+            .map((p) => `${encodeURIComponent(p.key)}=${encodeURIComponent(p.value)}`)
+            .join("&")}`
+        : urlWithoutParams;
+    saveMutation.mutate({ ...localRequest, url: rebuiltUrl });
   };
 
   const handleSend = () => {
     if (!localRequest) return;
     setResponse(null);
     setResponseView("raw");
-    executeMutation.mutate(localRequest);
+    // Rebuild URL from enabled params before sending
+    const urlWithoutParams = localRequest.url.split("?")[0];
+    const enabledParams = localRequest.queryParams.filter((p) => p.enabled && p.key);
+    const rebuiltUrl =
+      enabledParams.length > 0
+        ? `${urlWithoutParams}?${enabledParams
+            .map((p) => `${encodeURIComponent(p.key)}=${encodeURIComponent(p.value)}`)
+            .join("&")}`
+        : urlWithoutParams;
+    executeMutation.mutate({ ...localRequest, url: rebuiltUrl });
   };
 
   const addHeader = () => {
@@ -654,26 +737,10 @@ export function RequestBuilder({ requestId }: RequestBuilderProps) {
     const newParams = [...localRequest.queryParams];
     newParams[index] = { ...newParams[index], [field]: value };
 
-    // Extract base URL without query params
-    const urlWithoutParams = localRequest.url.split("?")[0];
-
-    // Build query string from enabled params with keys
-    const enabledParams = newParams.filter((p) => p.enabled && p.key);
-
-    let newUrl = urlWithoutParams;
-    if (enabledParams.length > 0) {
-      const queryString = enabledParams
-        .map(
-          (p) => `${encodeURIComponent(p.key)}=${encodeURIComponent(p.value)}`,
-        )
-        .join("&");
-      newUrl = `${urlWithoutParams}?${queryString}`;
-    }
-
+    // Only update params table; keep URL text intact until send/save
     setLocalRequest({
       ...localRequest,
       queryParams: newParams,
-      url: newUrl,
     });
   };
 
@@ -681,26 +748,9 @@ export function RequestBuilder({ requestId }: RequestBuilderProps) {
     if (!localRequest) return;
     const newParams = localRequest.queryParams.filter((_, i) => i !== index);
 
-    // Extract base URL without query params
-    const urlWithoutParams = localRequest.url.split("?")[0];
-
-    // Build query string from enabled params with keys
-    const enabledParams = newParams.filter((p) => p.enabled && p.key);
-
-    let newUrl = urlWithoutParams;
-    if (enabledParams.length > 0) {
-      const queryString = enabledParams
-        .map(
-          (p) => `${encodeURIComponent(p.key)}=${encodeURIComponent(p.value)}`,
-        )
-        .join("&");
-      newUrl = `${urlWithoutParams}?${queryString}`;
-    }
-
     setLocalRequest({
       ...localRequest,
       queryParams: newParams,
-      url: newUrl,
     });
   };
 
@@ -721,10 +771,10 @@ export function RequestBuilder({ requestId }: RequestBuilderProps) {
   }
 
   return (
-    <div className="flex flex-col h-full">
-      {/* Request Section */}
-      <div className="flex-1 flex flex-col overflow-hidden">
-        <div className="p-4 space-y-4 border-b">
+    <div className="h-full">
+      <ResizablePanelGroup direction="vertical">
+        <ResizablePanel defaultSize={65} minSize={35}>
+          <div className="p-4 space-y-4 border-b">
           {/* Name */}
           <div className="flex items-center gap-2">
             <Input
@@ -773,6 +823,7 @@ export function RequestBuilder({ requestId }: RequestBuilderProps) {
               onChange={(e) =>
                 setLocalRequest({ ...localRequest, url: e.target.value })
               }
+              onBlur={(e) => syncParamsFromUrl(e.target.value)}
               placeholder="https://api.example.com/endpoint"
               className="flex-1"
             />
@@ -782,14 +833,14 @@ export function RequestBuilder({ requestId }: RequestBuilderProps) {
               {executeMutation.isPending ? "Sende..." : "Send"}
             </Button>
           </div>
-        </div>
+          </div>
 
-        {/* Tabs */}
-        <Tabs
-          value={activeTab}
-          onValueChange={handleTabChange}
-          className="flex-1 flex flex-col overflow-hidden"
-        >
+          {/* Tabs */}
+          <Tabs
+            value={activeTab}
+            onValueChange={handleTabChange}
+            className="flex-1 flex flex-col overflow-hidden"
+          >
           <TabsList className="px-4 bg-muted/30">
             <TabsTrigger value="params">Params</TabsTrigger>
             <TabsTrigger value="auth">Authorization</TabsTrigger>
@@ -1218,17 +1269,16 @@ export function RequestBuilder({ requestId }: RequestBuilderProps) {
             />
             <p className="text-xs text-muted-foreground mt-2">Coming soon...</p>
           </TabsContent>
-        </Tabs>
-      </div>
-
-      {/* Response Section */}
-      {(response || isExecuting) && (
-        <div className="flex-1 border-t flex flex-col overflow-hidden bg-muted/10">
-          <div className="px-4 py-2 border-b flex flex-wrap items-center gap-3 bg-background text-xs">
+          </Tabs>
+        </ResizablePanel>
+        <ResizableHandle withHandle />
+        <ResizablePanel defaultSize={35} minSize={20}>
+          <div className="h-full flex flex-col overflow-hidden bg-muted/10 border-t">
+            <div className="px-4 py-2 border-b flex flex-wrap items-center gap-3 bg-background text-xs">
             <span className="font-medium text-muted-foreground uppercase tracking-wide">
               Response
             </span>
-            {response ? (
+              {response ? (
               <>
                 <Badge
                   variant={
@@ -1247,13 +1297,13 @@ export function RequestBuilder({ requestId }: RequestBuilderProps) {
                   {response.time} ms
                 </Badge>
               </>
-            ) : (
-              <div className="flex items-center gap-2 text-muted-foreground">
-                <Loader2 className="h-3.5 w-3.5 animate-spin text-foreground" />
-                Request wird ausgeführt...
-              </div>
-            )}
-            {response && (
+              ) : isExecuting ? (
+                <div className="flex items-center gap-2 text-muted-foreground">
+                  <Loader2 className="h-3.5 w-3.5 animate-spin text-foreground" />
+                  Request wird ausgeführt...
+                </div>
+              ) : null}
+              {response && (
               <div className="ml-auto flex items-center gap-2">
                 <Button
                   variant={activeResponseTab === "body" ? "secondary" : "ghost"}
@@ -1278,81 +1328,86 @@ export function RequestBuilder({ requestId }: RequestBuilderProps) {
                   Tests
                 </Button>
               </div>
-            )}
-          </div>
+              )}
+            </div>
 
-          {response ? (
-            activeResponseTab === "headers" ? (
-              <div className="flex-1 overflow-auto">
-                <div className="border-b bg-muted/20">
-                  <div className="grid grid-cols-2 gap-2 px-4 py-2 text-xs font-medium text-muted-foreground">
-                    <div>KEY</div>
-                    <div>VALUE</div>
+            {response ? (
+              activeResponseTab === "headers" ? (
+                <div className="flex-1 overflow-auto">
+                  <div className="border-b bg-muted/20">
+                    <div className="grid grid-cols-2 gap-2 px-4 py-2 text-xs font-medium text-muted-foreground">
+                      <div>KEY</div>
+                      <div>VALUE</div>
+                    </div>
+                  </div>
+                  <div className="divide-y">
+                    {Object.entries(response.headers).map(([key, value]) => (
+                      <div
+                        key={key}
+                        className="grid grid-cols-2 gap-2 px-4 py-2 text-xs hover:bg-muted/50"
+                      >
+                        <span className="font-medium font-mono">{key}</span>
+                        <span className="text-muted-foreground break-all">
+                          {value}
+                        </span>
+                      </div>
+                    ))}
                   </div>
                 </div>
-                <div className="divide-y">
-                  {Object.entries(response.headers).map(([key, value]) => (
-                    <div
-                      key={key}
-                      className="grid grid-cols-2 gap-2 px-4 py-2 text-xs hover:bg-muted/50"
-                    >
-                      <span className="font-medium font-mono">{key}</span>
-                      <span className="text-muted-foreground break-all">
-                        {value}
+              ) : (
+                <div className="flex-1 flex flex-col overflow-hidden">
+                  <div className="border-b p-2 bg-muted/20 flex items-center gap-2">
+                    {availableViews.length > 1 ? (
+                      <Select
+                        value={responseView}
+                        onValueChange={(value) =>
+                          setResponseView(value as BodyViewMode)
+                        }
+                      >
+                        <SelectTrigger className="w-[140px] h-7 text-xs">
+                          <SelectValue />
+                        </SelectTrigger>
+                        <SelectContent>
+                          {availableViews.map((view) => (
+                            <SelectItem key={view} value={view}>
+                              {RESPONSE_VIEW_LABELS[view]}
+                            </SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
+                    ) : (
+                      <div className="rounded border border-border/40 bg-background px-3 py-1 text-xs font-medium text-muted-foreground">
+                        {RESPONSE_VIEW_LABELS[availableViews[0] ?? "raw"]}
+                      </div>
+                    )}
+                    {contentTypeLabel && (
+                      <span className="text-xs text-muted-foreground">
+                        {contentTypeLabel}
                       </span>
-                    </div>
-                  ))}
+                    )}
+                  </div>
+                  <div className="flex-1 overflow-auto p-4 bg-background">
+                    {bodyContent}
+                  </div>
                 </div>
-              </div>
+              )
             ) : (
-              <div className="flex-1 flex flex-col overflow-hidden">
-                <div className="border-b p-2 bg-muted/20 flex items-center gap-2">
-                  {availableViews.length > 1 ? (
-                    <Select
-                      value={responseView}
-                      onValueChange={(value) =>
-                        setResponseView(value as BodyViewMode)
-                      }
-                    >
-                      <SelectTrigger className="w-[140px] h-7 text-xs">
-                        <SelectValue />
-                      </SelectTrigger>
-                      <SelectContent>
-                        {availableViews.map((view) => (
-                          <SelectItem key={view} value={view}>
-                            {RESPONSE_VIEW_LABELS[view]}
-                          </SelectItem>
-                        ))}
-                      </SelectContent>
-                    </Select>
-                  ) : (
-                    <div className="rounded border border-border/40 bg-background px-3 py-1 text-xs font-medium text-muted-foreground">
-                      {RESPONSE_VIEW_LABELS[availableViews[0] ?? "raw"]}
-                    </div>
-                  )}
-                  {contentTypeLabel && (
-                    <span className="text-xs text-muted-foreground">
-                      {contentTypeLabel}
+              <div className="flex-1 flex items-center justify-center bg-muted/20">
+                {isExecuting ? (
+                  <div className="flex items-center gap-3 rounded-lg border border-border/60 bg-background px-4 py-3 shadow-sm">
+                    <Loader2 className="h-4 w-4 animate-spin text-foreground" />
+                    <span className="text-sm text-muted-foreground">
+                      Warte auf Response...
                     </span>
-                  )}
-                </div>
-                <div className="flex-1 overflow-auto p-4 bg-background">
-                  {bodyContent}
-                </div>
+                  </div>
+                ) : (
+                  <div className="text-xs text-muted-foreground">Keine Response</div>
+                )}
               </div>
-            )
-          ) : (
-            <div className="flex-1 flex items-center justify-center bg-muted/20">
-              <div className="flex items-center gap-3 rounded-lg border border-border/60 bg-background px-4 py-3 shadow-sm">
-                <Loader2 className="h-4 w-4 animate-spin text-foreground" />
-                <span className="text-sm text-muted-foreground">
-                  Warte auf Response...
-                </span>
-              </div>
-            </div>
-          )}
-        </div>
-      )}
+            )}
+          </div>
+        </ResizablePanel>
+      </ResizablePanelGroup>
     </div>
   );
 }

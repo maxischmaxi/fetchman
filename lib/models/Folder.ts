@@ -1,5 +1,7 @@
 import mongoose, { Schema, Document, Types } from 'mongoose'
+import type { IFolderDocument } from '@/lib/types'
 
+// Extend the shared interface with Mongoose Document
 export interface IFolder extends Document {
   _id: Types.ObjectId
   name: string

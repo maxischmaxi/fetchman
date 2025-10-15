@@ -1,40 +1,15 @@
 import mongoose, { Schema, Document, Types } from 'mongoose'
+import type {
+  IRequestDocument,
+  HttpMethod,
+  IHeader,
+  IQueryParam,
+  IAuth,
+  AuthType,
+  BodyType
+} from '@/lib/types'
 
-export type HttpMethod = 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE' | 'HEAD' | 'OPTIONS'
-
-export interface IHeader {
-  key: string
-  value: string
-  enabled: boolean
-}
-
-export interface IQueryParam {
-  key: string
-  value: string
-  enabled: boolean
-}
-
-export type AuthType = 'none' | 'bearer' | 'basic' | 'api-key' | 'oauth2'
-
-export interface IAuth {
-  type: AuthType
-  bearer?: {
-    token: string
-  }
-  basic?: {
-    username: string
-    password: string
-  }
-  apiKey?: {
-    key: string
-    value: string
-    addTo: 'header' | 'query'
-  }
-  oauth2?: {
-    accessToken: string
-  }
-}
-
+// Extend the shared interface with Mongoose Document
 export interface IRequest extends Document {
   _id: Types.ObjectId
   name: string
@@ -46,7 +21,7 @@ export interface IRequest extends Document {
   queryParams: IQueryParam[]
   auth?: IAuth
   body?: string
-  bodyType?: 'none' | 'json' | 'text' | 'xml' | 'form-data' | 'x-www-form-urlencoded'
+  bodyType?: BodyType
   description?: string
   createdAt: Date
   updatedAt: Date
@@ -84,7 +59,7 @@ const RequestSchema = new Schema<IRequest>({
   },
   method: {
     type: String,
-    enum: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'HEAD', 'OPTIONS'],
+    enum: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'HEAD', 'OPTIONS'] satisfies HttpMethod[],
     default: 'GET',
   },
   url: {
@@ -110,7 +85,7 @@ const RequestSchema = new Schema<IRequest>({
   body: String,
   bodyType: {
     type: String,
-    enum: ['none', 'json', 'text', 'xml', 'form-data', 'x-www-form-urlencoded'],
+    enum: ['none', 'json', 'text', 'xml', 'form-data', 'x-www-form-urlencoded'] satisfies BodyType[],
     default: 'none',
   },
   description: String,

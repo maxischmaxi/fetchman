@@ -1,9 +1,11 @@
 import { NextResponse } from 'next/server'
 import connectDB from '@/lib/db/mongoose'
-import Request from '@/lib/models/Request'
+import RequestModel from '@/lib/models/Request'
+import { Types } from 'mongoose'
+import type { CreateRequestDto, IRequest, ApiError } from '@/lib/types'
 
 // GET all requests (optionally filtered)
-export async function GET(request: Request) {
+export async function GET(request: Request): Promise<NextResponse<IRequest[] | ApiError>> {
   try {
     await connectDB()
     const { searchParams } = new URL(request.url)
@@ -11,12 +13,35 @@ export async function GET(request: Request) {
     const folderId = searchParams.get('folderId')
 
     const query: Record<string, unknown> = {}
-    if (workspaceId) query.workspaceId = workspaceId
-    if (folderId) query.folderId = folderId
 
-    const requests = await Request.find(query).sort({ createdAt: -1 })
+    if (workspaceId) {
+      if (!Types.ObjectId.isValid(workspaceId)) {
+        return NextResponse.json(
+          { error: 'Invalid workspaceId' },
+          { status: 400 }
+        )
+      }
+      query.workspaceId = new Types.ObjectId(workspaceId)
+    }
 
-    return NextResponse.json(requests)
+    if (folderId) {
+      if (!Types.ObjectId.isValid(folderId)) {
+        return NextResponse.json(
+          { error: 'Invalid folderId' },
+          { status: 400 }
+        )
+      }
+      query.folderId = new Types.ObjectId(folderId)
+    }
+
+    const requests = await RequestModel.find(query).sort({ createdAt: -1 }).lean<IRequest[]>().exec()
+
+    return NextResponse.json(requests.map(r => ({
+      ...r,
+      _id: r._id.toString(),
+      workspaceId: r.workspaceId.toString(),
+      folderId: r.folderId?.toString()
+    })) as IRequest[])
   } catch (error) {
     console.error('Error fetching requests:', error)
     return NextResponse.json(
@@ -27,12 +52,18 @@ export async function GET(request: Request) {
 }
 
 // POST create new request
-export async function POST(request: Request) {
+export async function POST(request: Request): Promise<NextResponse<IRequest | ApiError>> {
   try {
     await connectDB()
-    const body = await request.json()
-    const newRequest = await Request.create(body)
-    return NextResponse.json(newRequest, { status: 201 })
+    const body: CreateRequestDto = await request.json()
+    const newRequest = await RequestModel.create(body)
+    const requestObj = newRequest.toObject()
+    return NextResponse.json({
+      ...requestObj,
+      _id: requestObj._id.toString(),
+      workspaceId: requestObj.workspaceId.toString(),
+      folderId: requestObj.folderId?.toString()
+    }, { status: 201 })
   } catch (error) {
     console.error('Error creating request:', error)
     return NextResponse.json(

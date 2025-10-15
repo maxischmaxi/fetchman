@@ -1,16 +1,21 @@
 import { NextResponse } from 'next/server'
 import connectDB from '@/lib/db/mongoose'
-import Request from '@/lib/models/Request'
+import RequestModel from '@/lib/models/Request'
+import { Types } from 'mongoose'
+import type { UpdateRequestDto, IRequest, ApiError } from '@/lib/types'
 
 // GET single request
 export async function GET(
   request: Request,
   { params }: { params: Promise<{ id: string }> }
-) {
+): Promise<NextResponse<IRequest | ApiError>> {
   try {
     const { id } = await params
+    if (!Types.ObjectId.isValid(id)) {
+      return NextResponse.json({ error: 'Invalid id' }, { status: 400 })
+    }
     await connectDB()
-    const req = await Request.findById(id)
+    const req = await RequestModel.findById(id).lean<IRequest>().exec()
 
     if (!req) {
       return NextResponse.json(
@@ -19,7 +24,12 @@ export async function GET(
       )
     }
 
-    return NextResponse.json(req)
+    return NextResponse.json({
+      ...req,
+      _id: req._id.toString(),
+      workspaceId: req.workspaceId.toString(),
+      folderId: req.folderId?.toString()
+    } as IRequest)
   } catch (error) {
     console.error('Error fetching request:', error)
     return NextResponse.json(
@@ -33,13 +43,16 @@ export async function GET(
 export async function PUT(
   request: Request,
   { params }: { params: Promise<{ id: string }> }
-) {
+): Promise<NextResponse<IRequest | ApiError>> {
   try {
     const { id } = await params
+    if (!Types.ObjectId.isValid(id)) {
+      return NextResponse.json({ error: 'Invalid id' }, { status: 400 })
+    }
     await connectDB()
-    const body = await request.json()
+    const body: UpdateRequestDto = await request.json()
 
-    const doc = await Request.findById(id)
+    const doc = await RequestModel.findById(id)
     if (!doc) {
       return NextResponse.json(
         { error: 'Request not found' },
@@ -56,8 +69,14 @@ export async function PUT(
     }
 
     await doc.save()
+    const savedDoc = doc.toObject()
 
-    return NextResponse.json(doc)
+    return NextResponse.json({
+      ...savedDoc,
+      _id: savedDoc._id.toString(),
+      workspaceId: savedDoc.workspaceId.toString(),
+      folderId: savedDoc.folderId?.toString()
+    })
   } catch (error) {
     console.error('Error updating request:', error)
     return NextResponse.json(
@@ -71,12 +90,15 @@ export async function PUT(
 export async function DELETE(
   request: Request,
   { params }: { params: Promise<{ id: string }> }
-) {
+): Promise<NextResponse<{ message: string } | ApiError>> {
   try {
     const { id } = await params
+    if (!Types.ObjectId.isValid(id)) {
+      return NextResponse.json({ error: 'Invalid id' }, { status: 400 })
+    }
     await connectDB()
 
-    const deletedRequest = await Request.findByIdAndDelete(id)
+    const deletedRequest = await RequestModel.findByIdAndDelete(id)
 
     if (!deletedRequest) {
       return NextResponse.json(
