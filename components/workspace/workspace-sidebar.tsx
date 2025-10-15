@@ -63,6 +63,11 @@ export function WorkspaceSidebar({
       if (!response.ok) throw new Error('Failed to fetch workspaces')
       return response.json() as Promise<Workspace[]>
     },
+    staleTime: 60_000,
+    refetchOnMount: false,
+    refetchOnReconnect: false,
+    refetchOnWindowFocus: false,
+    placeholderData: (previous) => previous,
   })
 
   // Create workspace mutation

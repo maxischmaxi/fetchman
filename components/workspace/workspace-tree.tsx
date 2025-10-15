@@ -1,6 +1,6 @@
 "use client"
 
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useCallback } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { ChevronRight, ChevronDown, Folder, FolderPlus, FilePlus, MoreHorizontal, Trash2 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
@@ -65,26 +65,63 @@ export function WorkspaceTree({
     }
   }, [selectedWorkspaceId, workspace._id])
 
+  const fetchFolders = useCallback(async () => {
+    const response = await fetch(`/api/folders?workspaceId=${workspace._id}`)
+    if (!response.ok) throw new Error('Failed to fetch folders')
+    return response.json() as Promise<Folder[]>
+  }, [workspace._id])
+
+  const fetchRequests = useCallback(async () => {
+    const response = await fetch(`/api/requests?workspaceId=${workspace._id}`)
+    if (!response.ok) throw new Error('Failed to fetch requests')
+    return response.json() as Promise<Request[]>
+  }, [workspace._id])
+
+  const prefetchWorkspaceData = useCallback(() => {
+    queryClient.prefetchQuery({
+      queryKey: ['folders', workspace._id],
+      queryFn: fetchFolders,
+      staleTime: 60_000,
+    })
+    queryClient.prefetchQuery({
+      queryKey: ['requests', workspace._id],
+      queryFn: fetchRequests,
+      staleTime: 60_000,
+    })
+    queryClient.prefetchQuery({
+      queryKey: ['workspace-folders', workspace._id],
+      queryFn: fetchFolders,
+      staleTime: 60_000,
+    })
+  }, [fetchFolders, fetchRequests, queryClient, workspace._id])
+
+  const handleWorkspaceSelect = useCallback(() => {
+    prefetchWorkspaceData()
+    onSelectWorkspace(workspace._id)
+  }, [onSelectWorkspace, prefetchWorkspaceData, workspace._id])
+
   // Fetch folders
   const { data: folders = [] } = useQuery({
     queryKey: ['folders', workspace._id],
-    queryFn: async () => {
-      const response = await fetch(`/api/folders?workspaceId=${workspace._id}`)
-      if (!response.ok) throw new Error('Failed to fetch folders')
-      return response.json() as Promise<Folder[]>
-    },
+    queryFn: fetchFolders,
     enabled: isExpanded,
+    staleTime: 60_000,
+    refetchOnMount: false,
+    refetchOnReconnect: false,
+    refetchOnWindowFocus: false,
+    placeholderData: (previous) => previous,
   })
 
   // Fetch requests
   const { data: requests = [] } = useQuery({
     queryKey: ['requests', workspace._id],
-    queryFn: async () => {
-      const response = await fetch(`/api/requests?workspaceId=${workspace._id}`)
-      if (!response.ok) throw new Error('Failed to fetch requests')
-      return response.json() as Promise<Request[]>
-    },
+    queryFn: fetchRequests,
     enabled: isExpanded,
+    staleTime: 60_000,
+    refetchOnMount: false,
+    refetchOnReconnect: false,
+    refetchOnWindowFocus: false,
+    placeholderData: (previous) => previous,
   })
 
   // Create folder mutation
@@ -174,13 +211,14 @@ export function WorkspaceTree({
         className={`group flex items-center gap-1 p-2 rounded-md hover:bg-accent cursor-pointer ${
           isWorkspaceActive ? 'bg-accent text-foreground' : ''
         }`}
-        onClick={() => onSelectWorkspace(workspace._id)}
+        onClick={handleWorkspaceSelect}
+        onMouseEnter={prefetchWorkspaceData}
         role="button"
         tabIndex={0}
         onKeyDown={(event) => {
           if (event.key === 'Enter' || event.key === ' ') {
             event.preventDefault()
-            onSelectWorkspace(workspace._id)
+            handleWorkspaceSelect()
           }
         }}
       >
@@ -314,6 +352,41 @@ function FolderItem({
   const isSelected = selectedFolderId === folder._id
   const isInActivePath = !isSelected && selectedFolderPath.includes(folder._id)
 
+  const prefetchFolderData = useCallback(() => {
+    queryClient.prefetchQuery({
+      queryKey: ['workspace-folders', workspaceId],
+      queryFn: async () => {
+        const response = await fetch(`/api/folders?workspaceId=${workspaceId}`)
+        if (!response.ok) throw new Error('Failed to fetch folders')
+        return response.json()
+      },
+      staleTime: 60_000,
+    })
+    queryClient.prefetchQuery({
+      queryKey: ['folder', folder._id],
+      queryFn: async () => {
+        const response = await fetch(`/api/folders/${folder._id}`)
+        if (!response.ok) throw new Error('Failed to fetch folder')
+        return response.json()
+      },
+      staleTime: 60_000,
+    })
+    queryClient.prefetchQuery({
+      queryKey: ['folder-requests', folder._id],
+      queryFn: async () => {
+        const response = await fetch(`/api/requests?workspaceId=${workspaceId}&folderId=${folder._id}`)
+        if (!response.ok) throw new Error('Failed to fetch folder requests')
+        return response.json()
+      },
+      staleTime: 30_000,
+    })
+  }, [folder._id, queryClient, workspaceId])
+
+  const handleFolderSelect = useCallback(() => {
+    prefetchFolderData()
+    onSelectFolder(folder._id)
+  }, [onSelectFolder, prefetchFolderData, folder._id])
+
   const childFolders = allFolders.filter(f => f.parentFolderId === folder._id)
   const childRequests = allRequests.filter(r => r.folderId === folder._id)
 
@@ -349,13 +422,14 @@ function FolderItem({
         className={`group flex items-center gap-1 p-2 rounded-md hover:bg-accent cursor-pointer ${
           isSelected ? 'bg-accent text-foreground' : isInActivePath ? 'bg-muted/40' : ''
         }`}
-        onClick={() => onSelectFolder(folder._id)}
+        onClick={handleFolderSelect}
+        onMouseEnter={prefetchFolderData}
         role="button"
         tabIndex={0}
         onKeyDown={(event) => {
           if (event.key === 'Enter' || event.key === ' ') {
             event.preventDefault()
-            onSelectFolder(folder._id)
+            handleFolderSelect()
           }
         }}
       >

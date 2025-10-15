@@ -1,8 +1,9 @@
 "use client";
 
-import { useState, useEffect, useCallback } from "react";
+import Image from "next/image";
+import { useState, useEffect, useCallback, useMemo } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { Send, Trash2, Save } from "lucide-react";
+import { Send, Trash2, Save, Loader2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
@@ -42,7 +43,7 @@ interface QueryParam {
   enabled: boolean;
 }
 
-type AuthType = 'none' | 'bearer' | 'basic' | 'api-key' | 'oauth2';
+type AuthType = "none" | "bearer" | "basic" | "api-key" | "oauth2";
 
 interface Auth {
   type: AuthType;
@@ -56,7 +57,7 @@ interface Auth {
   apiKey?: {
     key: string;
     value: string;
-    addTo: 'header' | 'query';
+    addTo: "header" | "query";
   };
   oauth2?: {
     accessToken: string;
@@ -77,14 +78,117 @@ interface Request {
   bodyType?: string;
 }
 
+type ResponseBodyType = "json" | "text" | "html" | "image" | "binary";
+type ResponseEncoding = "utf8" | "base64";
+
+type BodyViewMode = "pretty" | "raw" | "preview";
+
 interface Response {
   status: number;
   statusText: string;
   headers: Record<string, string>;
   body: unknown;
+  bodyType: ResponseBodyType;
+  bodyText?: string;
+  encoding?: ResponseEncoding;
+  contentType?: string;
   time: number;
   size: number;
 }
+
+const RESPONSE_VIEW_LABELS: Record<BodyViewMode, string> = {
+  pretty: "Pretty",
+  raw: "Raw",
+  preview: "Preview",
+};
+
+const formatBytes = (bytes: number) => {
+  if (Number.isNaN(bytes) || bytes === Infinity) {
+    return "—";
+  }
+  if (bytes === 0) return "0 B";
+  const units = ["B", "KB", "MB", "GB", "TB"];
+  const idx = Math.floor(Math.log(bytes) / Math.log(1024));
+  const value = bytes / Math.pow(1024, idx);
+  return `${value.toFixed(2)} ${units[idx]}`;
+};
+
+const VOID_HTML_TAGS = new Set([
+  "area",
+  "base",
+  "br",
+  "col",
+  "embed",
+  "hr",
+  "img",
+  "input",
+  "link",
+  "meta",
+  "param",
+  "source",
+  "track",
+  "wbr",
+]);
+
+const formatHtml = (html: string) => {
+  const normalized = html
+    .replace(/>\s+</g, "><")
+    .replace(/></g, ">\n<")
+    .replace(/\r\n/g, "\n");
+
+  const lines = normalized.split("\n");
+  let indentLevel = 0;
+
+  return lines
+    .map((line) => line.trim())
+    .filter((line) => line.length > 0)
+    .map((line) => {
+      const isClosingTag = /^<\/[^>]+>/.test(line);
+      const isSelfClosing = /\/>$/.test(line);
+      const tagMatch = line.match(/^<([a-zA-Z0-9-]+)/);
+      const tagName = tagMatch?.[1]?.toLowerCase();
+
+      if (isClosingTag) {
+        indentLevel = Math.max(indentLevel - 1, 0);
+      }
+
+      const indentation = "  ".repeat(indentLevel);
+
+      if (
+        !isClosingTag &&
+        !isSelfClosing &&
+        tagName &&
+        !VOID_HTML_TAGS.has(tagName)
+      ) {
+        indentLevel += 1;
+      }
+
+      return `${indentation}${line}`;
+    })
+    .join("\n");
+};
+
+const determineAvailableViews = (resp: Response): BodyViewMode[] => {
+  switch (resp.bodyType) {
+    case "json":
+      return ["pretty", "raw"];
+    case "html":
+      return ["preview", "raw"];
+    case "image":
+      return ["preview", "raw"];
+    case "text":
+    case "binary":
+    default:
+      return ["raw"];
+  }
+};
+
+const determineDefaultView = (resp: Response): BodyViewMode => {
+  const available = determineAvailableViews(resp);
+  if (available.includes("pretty")) return "pretty";
+  if (available.includes("preview")) return "preview";
+  return available[0] ?? "raw";
+};
 
 interface RequestBuilderProps {
   requestId: string;
@@ -94,6 +198,8 @@ export function RequestBuilder({ requestId }: RequestBuilderProps) {
   const queryClient = useQueryClient();
   const [localRequest, setLocalRequest] = useState<Request | null>(null);
   const [response, setResponse] = useState<Response | null>(null);
+  const [responseView, setResponseView] = useState<BodyViewMode>("raw");
+  const [activeResponseTab, setActiveResponseTab] = useState<"body" | "headers">("body");
   const searchParams = useSearchParams();
   const router = useRouter();
   const pathname = usePathname();
@@ -108,7 +214,9 @@ export function RequestBuilder({ requestId }: RequestBuilderProps) {
       const nextSearch = new URLSearchParams(searchParams);
       nextSearch.set("tab", value);
       const query = nextSearch.toString();
-      router.replace(query ? `${pathname}?${query}` : pathname, { scroll: false });
+      router.replace(query ? `${pathname}?${query}` : pathname, {
+        scroll: false,
+      });
     },
     [pathname, router, searchParams],
   );
@@ -142,6 +250,95 @@ export function RequestBuilder({ requestId }: RequestBuilderProps) {
     [persistTabInUrl],
   );
 
+  useEffect(() => {
+    if (!response) {
+      setResponseView("raw");
+      setActiveResponseTab("body");
+      return;
+    }
+    setResponseView(determineDefaultView(response));
+    setActiveResponseTab("body");
+  }, [response]);
+
+  const availableViews = useMemo(
+    () => (response ? determineAvailableViews(response) : []),
+    [response],
+  );
+
+  const contentTypeLabel = useMemo(() => {
+    if (!response) return "";
+    if (response.contentType) {
+      return response.contentType.split(";")[0];
+    }
+    return response.bodyType.toUpperCase();
+  }, [response]);
+
+  const bodyContent = useMemo(() => {
+    if (!response) return null;
+
+    if (responseView === "preview") {
+      if (response.bodyType === "image" && typeof response.body === "string") {
+        const dataUrl = `data:${response.contentType || "image/*"};base64,${response.body}`;
+        return (
+          <div className="flex h-full w-full items-center justify-center bg-muted/10">
+            <Image
+              src={dataUrl}
+              alt="Response preview"
+              className="max-h-full max-w-full rounded border border-border/60 bg-white"
+              width={400}
+              height={400}
+            />
+          </div>
+        );
+      }
+
+      if (response.bodyType === "html" && typeof response.body === "string") {
+        return (
+          <iframe
+            title="Response HTML Preview"
+            className="h-full w-full rounded border border-border/60 bg-white"
+            sandbox=""
+            srcDoc={response.body}
+          />
+        );
+      }
+
+      return (
+        <div className="text-xs text-muted-foreground">
+          Keine Vorschau für diesen Inhaltstyp verfügbar.
+        </div>
+      );
+    }
+
+    if (responseView === "pretty" && response.bodyType === "json") {
+      return (
+        <pre className="text-xs font-mono leading-relaxed whitespace-pre-wrap break-words">
+          {JSON.stringify(response.body, null, 2)}
+        </pre>
+      );
+    }
+
+    let rawContent: string;
+    if (response.bodyType === "json") {
+      rawContent = response.bodyText ?? JSON.stringify(response.body, null, 2);
+    } else if (
+      response.bodyType === "html" &&
+      typeof response.body === "string"
+    ) {
+      rawContent = formatHtml(response.body);
+    } else if (typeof response.body === "string") {
+      rawContent = response.body;
+    } else {
+      rawContent = JSON.stringify(response.body, null, 2);
+    }
+
+    return (
+      <pre className="text-xs font-mono leading-relaxed whitespace-pre-wrap break-words">
+        {rawContent}
+      </pre>
+    );
+  }, [response, responseView]);
+
   // Fetch request data with useQuery
   const { data: request, isLoading: isFetchingRequest } = useQuery({
     queryKey: ["request", requestId],
@@ -167,7 +364,7 @@ export function RequestBuilder({ requestId }: RequestBuilderProps) {
     if (request) {
       // Ensure auth object exists with default type
       if (!request.auth) {
-        request.auth = { type: 'none' };
+        request.auth = { type: "none" };
       }
       setLocalRequest(request);
       setResponse(null);
@@ -189,13 +386,15 @@ export function RequestBuilder({ requestId }: RequestBuilderProps) {
     onSuccess: (updated) => {
       const normalized = {
         ...updated,
-        auth: updated.auth ?? { type: 'none' },
+        auth: updated.auth ?? { type: "none" },
       };
       setLocalRequest(normalized);
       queryClient.setQueryData(["request", requestId], normalized);
       queryClient.invalidateQueries({ queryKey: ["request", requestId] });
       if (normalized.workspaceId) {
-        queryClient.invalidateQueries({ queryKey: ["requests", normalized.workspaceId] });
+        queryClient.invalidateQueries({
+          queryKey: ["requests", normalized.workspaceId],
+        });
       } else {
         queryClient.invalidateQueries({ queryKey: ["requests"] });
       }
@@ -203,7 +402,7 @@ export function RequestBuilder({ requestId }: RequestBuilderProps) {
   });
 
   // Execute request mutation
-  const executeMutation = useMutation({
+  const executeMutation = useMutation<Response, Error, Request>({
     mutationFn: async (requestData: Request) => {
       // Build URL with query params
       let url = requestData.url;
@@ -221,14 +420,26 @@ export function RequestBuilder({ requestId }: RequestBuilderProps) {
 
       // Add auth headers/params
       if (requestData.auth) {
-        if (requestData.auth.type === 'bearer' && requestData.auth.bearer?.token) {
-          headers['Authorization'] = `Bearer ${requestData.auth.bearer.token}`;
-        } else if (requestData.auth.type === 'basic' && requestData.auth.basic) {
-          const credentials = btoa(`${requestData.auth.basic.username}:${requestData.auth.basic.password}`);
-          headers['Authorization'] = `Basic ${credentials}`;
-        } else if (requestData.auth.type === 'api-key' && requestData.auth.apiKey) {
-          if (requestData.auth.apiKey.addTo === 'header') {
-            headers[requestData.auth.apiKey.key] = requestData.auth.apiKey.value;
+        if (
+          requestData.auth.type === "bearer" &&
+          requestData.auth.bearer?.token
+        ) {
+          headers["Authorization"] = `Bearer ${requestData.auth.bearer.token}`;
+        } else if (
+          requestData.auth.type === "basic" &&
+          requestData.auth.basic
+        ) {
+          const credentials = btoa(
+            `${requestData.auth.basic.username}:${requestData.auth.basic.password}`,
+          );
+          headers["Authorization"] = `Basic ${credentials}`;
+        } else if (
+          requestData.auth.type === "api-key" &&
+          requestData.auth.apiKey
+        ) {
+          if (requestData.auth.apiKey.addTo === "header") {
+            headers[requestData.auth.apiKey.key] =
+              requestData.auth.apiKey.value;
           } else {
             enabledParams.push({
               key: requestData.auth.apiKey.key,
@@ -236,8 +447,12 @@ export function RequestBuilder({ requestId }: RequestBuilderProps) {
               enabled: true,
             });
           }
-        } else if (requestData.auth.type === 'oauth2' && requestData.auth.oauth2?.accessToken) {
-          headers['Authorization'] = `Bearer ${requestData.auth.oauth2.accessToken}`;
+        } else if (
+          requestData.auth.type === "oauth2" &&
+          requestData.auth.oauth2?.accessToken
+        ) {
+          headers["Authorization"] =
+            `Bearer ${requestData.auth.oauth2.accessToken}`;
         }
       }
 
@@ -260,12 +475,15 @@ export function RequestBuilder({ requestId }: RequestBuilderProps) {
       });
 
       if (!res.ok) throw new Error("Failed to execute request");
-      return res.json();
+      const data = await res.json();
+      return data as Response;
     },
     onSuccess: (data) => {
       setResponse(data);
     },
   });
+
+  const isExecuting = executeMutation.isPending;
 
   const parseUrlParams = (url: string): QueryParam[] => {
     try {
@@ -287,10 +505,12 @@ export function RequestBuilder({ requestId }: RequestBuilderProps) {
       ...localRequest,
       auth: {
         type,
-        ...(type === 'bearer' && { bearer: { token: '' } }),
-        ...(type === 'basic' && { basic: { username: '', password: '' } }),
-        ...(type === 'api-key' && { apiKey: { key: '', value: '', addTo: 'header' as const } }),
-        ...(type === 'oauth2' && { oauth2: { accessToken: '' } }),
+        ...(type === "bearer" && { bearer: { token: "" } }),
+        ...(type === "basic" && { basic: { username: "", password: "" } }),
+        ...(type === "api-key" && {
+          apiKey: { key: "", value: "", addTo: "header" as const },
+        }),
+        ...(type === "oauth2" && { oauth2: { accessToken: "" } }),
       },
     });
   };
@@ -299,16 +519,27 @@ export function RequestBuilder({ requestId }: RequestBuilderProps) {
     if (!localRequest?.auth) return;
 
     const authType = localRequest.auth.type;
-    let updatedAuth = { ...localRequest.auth };
+    const updatedAuth = { ...localRequest.auth };
 
-    if (authType === 'bearer') {
-      updatedAuth.bearer = { ...updatedAuth.bearer, [field]: value } as { token: string };
-    } else if (authType === 'basic') {
-      updatedAuth.basic = { ...updatedAuth.basic, [field]: value } as { username: string; password: string };
-    } else if (authType === 'api-key') {
-      updatedAuth.apiKey = { ...updatedAuth.apiKey, [field]: value } as { key: string; value: string; addTo: 'header' | 'query' };
-    } else if (authType === 'oauth2') {
-      updatedAuth.oauth2 = { ...updatedAuth.oauth2, [field]: value } as { accessToken: string };
+    if (authType === "bearer") {
+      updatedAuth.bearer = { ...updatedAuth.bearer, [field]: value } as {
+        token: string;
+      };
+    } else if (authType === "basic") {
+      updatedAuth.basic = { ...updatedAuth.basic, [field]: value } as {
+        username: string;
+        password: string;
+      };
+    } else if (authType === "api-key") {
+      updatedAuth.apiKey = { ...updatedAuth.apiKey, [field]: value } as {
+        key: string;
+        value: string;
+        addTo: "header" | "query";
+      };
+    } else if (authType === "oauth2") {
+      updatedAuth.oauth2 = { ...updatedAuth.oauth2, [field]: value } as {
+        accessToken: string;
+      };
     }
 
     setLocalRequest({
@@ -322,26 +553,37 @@ export function RequestBuilder({ requestId }: RequestBuilderProps) {
 
     // Update headers to match content type
     const contentTypeMap: Record<string, string> = {
-      'json': 'application/json',
-      'xml': 'application/xml',
-      'text': 'text/plain',
-      'form-data': 'multipart/form-data',
-      'urlencoded': 'application/x-www-form-urlencoded',
+      json: "application/json",
+      xml: "application/xml",
+      text: "text/plain",
+      "form-data": "multipart/form-data",
+      urlencoded: "application/x-www-form-urlencoded",
     };
 
     const newContentType = contentTypeMap[newBodyType];
     let updatedHeaders = [...localRequest.headers];
 
-    if (newBodyType === 'none') {
+    if (newBodyType === "none") {
       // Remove Content-Type header
-      updatedHeaders = updatedHeaders.filter(h => h.key.toLowerCase() !== 'content-type');
+      updatedHeaders = updatedHeaders.filter(
+        (h) => h.key.toLowerCase() !== "content-type",
+      );
     } else if (newContentType) {
       // Update or add Content-Type header
-      const contentTypeIndex = updatedHeaders.findIndex(h => h.key.toLowerCase() === 'content-type');
+      const contentTypeIndex = updatedHeaders.findIndex(
+        (h) => h.key.toLowerCase() === "content-type",
+      );
       if (contentTypeIndex >= 0) {
-        updatedHeaders[contentTypeIndex] = { ...updatedHeaders[contentTypeIndex], value: newContentType };
+        updatedHeaders[contentTypeIndex] = {
+          ...updatedHeaders[contentTypeIndex],
+          value: newContentType,
+        };
       } else {
-        updatedHeaders.push({ key: 'Content-Type', value: newContentType, enabled: true });
+        updatedHeaders.push({
+          key: "Content-Type",
+          value: newContentType,
+          enabled: true,
+        });
       }
     }
 
@@ -360,6 +602,7 @@ export function RequestBuilder({ requestId }: RequestBuilderProps) {
   const handleSend = () => {
     if (!localRequest) return;
     setResponse(null);
+    setResponseView("raw");
     executeMutation.mutate(localRequest);
   };
 
@@ -637,12 +880,17 @@ export function RequestBuilder({ requestId }: RequestBuilderProps) {
           </TabsContent>
 
           {/* Authorization */}
-          <TabsContent value="auth" className="flex-1 flex flex-col overflow-hidden m-0">
+          <TabsContent
+            value="auth"
+            className="flex-1 flex flex-col overflow-hidden m-0"
+          >
             <div className="border-b bg-muted/20 px-4 py-3">
               <div className="flex items-center gap-3">
-                <Label className="text-xs font-medium text-muted-foreground">TYPE</Label>
+                <Label className="text-xs font-medium text-muted-foreground">
+                  TYPE
+                </Label>
                 <Select
-                  value={localRequest.auth?.type || 'none'}
+                  value={localRequest.auth?.type || "none"}
                   onValueChange={(value: AuthType) => updateAuth(value)}
                 >
                   <SelectTrigger className="w-[200px] h-8">
@@ -660,7 +908,7 @@ export function RequestBuilder({ requestId }: RequestBuilderProps) {
             </div>
 
             <div className="flex-1 overflow-auto">
-              {localRequest.auth?.type === 'none' && (
+              {localRequest.auth?.type === "none" && (
                 <div className="p-4">
                   <p className="text-sm text-muted-foreground">
                     Dieser Request benötigt keine Authentifizierung.
@@ -668,79 +916,97 @@ export function RequestBuilder({ requestId }: RequestBuilderProps) {
                 </div>
               )}
 
-              {localRequest.auth?.type === 'bearer' && (
+              {localRequest.auth?.type === "bearer" && (
                 <div className="p-4 space-y-4">
                   <div className="space-y-2">
-                    <Label htmlFor="bearer-token" className="text-sm">Token</Label>
+                    <Label htmlFor="bearer-token" className="text-sm">
+                      Token
+                    </Label>
                     <Input
                       id="bearer-token"
                       type="password"
-                      value={localRequest.auth.bearer?.token || ''}
-                      onChange={(e) => updateAuthField('token', e.target.value)}
+                      value={localRequest.auth.bearer?.token || ""}
+                      onChange={(e) => updateAuthField("token", e.target.value)}
                       placeholder="Enter bearer token"
                       className="font-mono text-sm"
                     />
                     <p className="text-xs text-muted-foreground">
-                      Der Token wird als "Authorization: Bearer {'<token>'}" Header gesendet.
+                      Der Token wird als &quot;Authorization: Bearer {"<token>"}
+                      &quot; Header gesendet.
                     </p>
                   </div>
                 </div>
               )}
 
-              {localRequest.auth?.type === 'basic' && (
+              {localRequest.auth?.type === "basic" && (
                 <div className="p-4 space-y-4">
                   <div className="space-y-2">
-                    <Label htmlFor="basic-username" className="text-sm">Username</Label>
+                    <Label htmlFor="basic-username" className="text-sm">
+                      Username
+                    </Label>
                     <Input
                       id="basic-username"
-                      value={localRequest.auth.basic?.username || ''}
-                      onChange={(e) => updateAuthField('username', e.target.value)}
+                      value={localRequest.auth.basic?.username || ""}
+                      onChange={(e) =>
+                        updateAuthField("username", e.target.value)
+                      }
                       placeholder="Enter username"
                     />
                   </div>
                   <div className="space-y-2">
-                    <Label htmlFor="basic-password" className="text-sm">Password</Label>
+                    <Label htmlFor="basic-password" className="text-sm">
+                      Password
+                    </Label>
                     <Input
                       id="basic-password"
                       type="password"
-                      value={localRequest.auth.basic?.password || ''}
-                      onChange={(e) => updateAuthField('password', e.target.value)}
+                      value={localRequest.auth.basic?.password || ""}
+                      onChange={(e) =>
+                        updateAuthField("password", e.target.value)
+                      }
                       placeholder="Enter password"
                     />
                   </div>
                   <p className="text-xs text-muted-foreground">
-                    Credentials werden als Base64-encodierter "Authorization: Basic" Header gesendet.
+                    Credentials werden als Base64-encodierter
+                    &quot;Authorization: Basic&quot; Header gesendet.
                   </p>
                 </div>
               )}
 
-              {localRequest.auth?.type === 'api-key' && (
+              {localRequest.auth?.type === "api-key" && (
                 <div className="p-4 space-y-4">
                   <div className="space-y-2">
-                    <Label htmlFor="apikey-key" className="text-sm">Key</Label>
+                    <Label htmlFor="apikey-key" className="text-sm">
+                      Key
+                    </Label>
                     <Input
                       id="apikey-key"
-                      value={localRequest.auth.apiKey?.key || ''}
-                      onChange={(e) => updateAuthField('key', e.target.value)}
+                      value={localRequest.auth.apiKey?.key || ""}
+                      onChange={(e) => updateAuthField("key", e.target.value)}
                       placeholder="X-API-Key"
                     />
                   </div>
                   <div className="space-y-2">
-                    <Label htmlFor="apikey-value" className="text-sm">Value</Label>
+                    <Label htmlFor="apikey-value" className="text-sm">
+                      Value
+                    </Label>
                     <Input
                       id="apikey-value"
                       type="password"
-                      value={localRequest.auth.apiKey?.value || ''}
-                      onChange={(e) => updateAuthField('value', e.target.value)}
+                      value={localRequest.auth.apiKey?.value || ""}
+                      onChange={(e) => updateAuthField("value", e.target.value)}
                       placeholder="Enter API key"
                       className="font-mono text-sm"
                     />
                   </div>
                   <div className="space-y-2">
-                    <Label htmlFor="apikey-addto" className="text-sm">Add to</Label>
+                    <Label htmlFor="apikey-addto" className="text-sm">
+                      Add to
+                    </Label>
                     <Select
-                      value={localRequest.auth.apiKey?.addTo || 'header'}
-                      onValueChange={(value) => updateAuthField('addTo', value)}
+                      value={localRequest.auth.apiKey?.addTo || "header"}
+                      onValueChange={(value) => updateAuthField("addTo", value)}
                     >
                       <SelectTrigger id="apikey-addto" className="w-[200px]">
                         <SelectValue />
@@ -752,25 +1018,31 @@ export function RequestBuilder({ requestId }: RequestBuilderProps) {
                     </Select>
                   </div>
                   <p className="text-xs text-muted-foreground">
-                    Der API Key wird entweder als Header oder Query Parameter hinzugefügt.
+                    Der API Key wird entweder als Header oder Query Parameter
+                    hinzugefügt.
                   </p>
                 </div>
               )}
 
-              {localRequest.auth?.type === 'oauth2' && (
+              {localRequest.auth?.type === "oauth2" && (
                 <div className="p-4 space-y-4">
                   <div className="space-y-2">
-                    <Label htmlFor="oauth2-token" className="text-sm">Access Token</Label>
+                    <Label htmlFor="oauth2-token" className="text-sm">
+                      Access Token
+                    </Label>
                     <Input
                       id="oauth2-token"
                       type="password"
-                      value={localRequest.auth.oauth2?.accessToken || ''}
-                      onChange={(e) => updateAuthField('accessToken', e.target.value)}
+                      value={localRequest.auth.oauth2?.accessToken || ""}
+                      onChange={(e) =>
+                        updateAuthField("accessToken", e.target.value)
+                      }
                       placeholder="Enter access token"
                       className="font-mono text-sm"
                     />
                     <p className="text-xs text-muted-foreground">
-                      Der Access Token wird als "Authorization: Bearer {'<token>'}" Header gesendet.
+                      Der Access Token wird als &quot;Authorization: Bearer{" "}
+                      {"<token>"}&quot; Header gesendet.
                     </p>
                   </div>
                 </div>
@@ -861,9 +1133,11 @@ export function RequestBuilder({ requestId }: RequestBuilderProps) {
           >
             <div className="border-b px-4 py-3 bg-muted/20">
               <div className="flex items-center gap-3">
-                <Label className="text-xs font-medium text-muted-foreground">TYPE</Label>
+                <Label className="text-xs font-medium text-muted-foreground">
+                  TYPE
+                </Label>
                 <Select
-                  value={localRequest.bodyType || 'none'}
+                  value={localRequest.bodyType || "none"}
                   onValueChange={updateBodyType}
                 >
                   <SelectTrigger className="w-[200px] h-8">
@@ -875,40 +1149,49 @@ export function RequestBuilder({ requestId }: RequestBuilderProps) {
                     <SelectItem value="text">Text</SelectItem>
                     <SelectItem value="xml">XML</SelectItem>
                     <SelectItem value="form-data">form-data</SelectItem>
-                    <SelectItem value="urlencoded">x-www-form-urlencoded</SelectItem>
+                    <SelectItem value="urlencoded">
+                      x-www-form-urlencoded
+                    </SelectItem>
                   </SelectContent>
                 </Select>
               </div>
             </div>
             <div className="flex-1 overflow-auto">
-              {localRequest.bodyType === 'none' && (
+              {localRequest.bodyType === "none" && (
                 <div className="p-4">
                   <p className="text-sm text-muted-foreground">
                     Dieser Request hat keinen Body.
                   </p>
                 </div>
               )}
-              {localRequest.bodyType && localRequest.bodyType !== 'none' && (
+              {localRequest.bodyType && localRequest.bodyType !== "none" && (
                 <div className="h-full">
                   <CodeEditor
                     value={localRequest.body || ""}
                     onChange={(value) =>
                       setLocalRequest((prev) =>
-                        prev ? { ...prev, body: value } : prev
+                        prev ? { ...prev, body: value } : prev,
                       )
                     }
                     language={
-                      localRequest.bodyType === 'json' ? 'json' :
-                      localRequest.bodyType === 'xml' ? 'xml' :
-                      localRequest.bodyType === 'text' ? 'plaintext' :
-                      'plaintext'
+                      localRequest.bodyType === "json"
+                        ? "json"
+                        : localRequest.bodyType === "xml"
+                          ? "xml"
+                          : localRequest.bodyType === "text"
+                            ? "plaintext"
+                            : "plaintext"
                     }
                     placeholder={
-                      localRequest.bodyType === 'json' ? '{\n  "key": "value"\n}' :
-                      localRequest.bodyType === 'xml' ? '<?xml version="1.0"?>\n<root>\n  <item>value</item>\n</root>' :
-                      localRequest.bodyType === 'urlencoded' ? 'key1=value1&key2=value2' :
-                      localRequest.bodyType === 'form-data' ? 'key1=value1\nkey2=value2' :
-                      'Enter body content...'
+                      localRequest.bodyType === "json"
+                        ? '{\n  "key": "value"\n}'
+                        : localRequest.bodyType === "xml"
+                          ? '<?xml version="1.0"?>\n<root>\n  <item>value</item>\n</root>'
+                          : localRequest.bodyType === "urlencoded"
+                            ? "key1=value1&key2=value2"
+                            : localRequest.bodyType === "form-data"
+                              ? "key1=value1\nkey2=value2"
+                              : "Enter body content..."
                     }
                   />
                 </div>
@@ -939,98 +1222,74 @@ export function RequestBuilder({ requestId }: RequestBuilderProps) {
       </div>
 
       {/* Response Section */}
-      {response && (
+      {(response || isExecuting) && (
         <div className="flex-1 border-t flex flex-col overflow-hidden bg-muted/10">
-          <div className="px-4 py-2 border-b flex items-center gap-4 bg-background">
-            <span className="text-xs font-medium text-muted-foreground">
+          <div className="px-4 py-2 border-b flex flex-wrap items-center gap-3 bg-background text-xs">
+            <span className="font-medium text-muted-foreground uppercase tracking-wide">
               Response
             </span>
-            <Badge
-              variant={
-                response.status >= 200 && response.status < 300
-                  ? "default"
-                  : "destructive"
-              }
-              className="font-mono text-xs"
-            >
-              {response.status} {response.statusText}
-            </Badge>
-            <div className="flex items-center gap-4 text-xs text-muted-foreground">
-              <span>
-                Time:{" "}
-                <span className="font-medium text-foreground">
-                  {response.time}ms
-                </span>
-              </span>
-              <span>
-                Size:{" "}
-                <span className="font-medium text-foreground">
-                  {(response.size / 1024).toFixed(2)} KB
-                </span>
-              </span>
-            </div>
+            {response ? (
+              <>
+                <Badge
+                  variant={
+                    response.status >= 200 && response.status < 300
+                      ? "default"
+                      : "destructive"
+                  }
+                  className="font-mono text-xs"
+                >
+                  {response.status} {response.statusText}
+                </Badge>
+                <Badge variant="outline" className="text-[10px] font-mono px-2 py-0.5">
+                  {formatBytes(response.size)}
+                </Badge>
+                <Badge variant="outline" className="text-[10px] font-mono px-2 py-0.5">
+                  {response.time} ms
+                </Badge>
+              </>
+            ) : (
+              <div className="flex items-center gap-2 text-muted-foreground">
+                <Loader2 className="h-3.5 w-3.5 animate-spin text-foreground" />
+                Request wird ausgeführt...
+              </div>
+            )}
+            {response && (
+              <div className="ml-auto flex items-center gap-2">
+                <Button
+                  variant={activeResponseTab === "body" ? "secondary" : "ghost"}
+                  size="sm"
+                  className="h-7 px-3 text-xs"
+                  onClick={() => setActiveResponseTab("body")}
+                >
+                  Body
+                </Button>
+                <Button variant="ghost" size="sm" className="h-7 px-3 text-xs" disabled>
+                  Cookies
+                </Button>
+                <Button
+                  variant={activeResponseTab === "headers" ? "secondary" : "ghost"}
+                  size="sm"
+                  className="h-7 px-3 text-xs"
+                  onClick={() => setActiveResponseTab("headers")}
+                >
+                  Headers ({Object.keys(response.headers).length})
+                </Button>
+                <Button variant="ghost" size="sm" className="h-7 px-3 text-xs" disabled>
+                  Tests
+                </Button>
+              </div>
+            )}
           </div>
 
-          <Tabs
-            defaultValue="body"
-            className="flex-1 flex flex-col overflow-hidden"
-          >
-            <TabsList className="px-4 bg-muted/30 border-b h-9">
-              <TabsTrigger value="body" className="text-xs">
-                Body
-              </TabsTrigger>
-              <TabsTrigger value="cookies" className="text-xs" disabled>
-                Cookies
-              </TabsTrigger>
-              <TabsTrigger value="headers" className="text-xs">
-                Headers ({Object.keys(response.headers).length})
-              </TabsTrigger>
-              <TabsTrigger value="test-results" className="text-xs" disabled>
-                Test Results
-              </TabsTrigger>
-            </TabsList>
-
-            <TabsContent
-              value="body"
-              className="flex-1 flex flex-col overflow-hidden m-0"
-            >
-              <div className="border-b p-2 bg-muted/20 flex items-center gap-2">
-                <Select defaultValue="pretty">
-                  <SelectTrigger className="w-[120px] h-7 text-xs">
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="pretty">Pretty</SelectItem>
-                    <SelectItem value="raw">Raw</SelectItem>
-                    <SelectItem value="preview">Preview</SelectItem>
-                  </SelectContent>
-                </Select>
-                <span className="text-xs text-muted-foreground">JSON</span>
-              </div>
-              <div className="flex-1 overflow-auto p-4 bg-background">
-                <pre className="text-xs font-mono leading-relaxed">
-                  {JSON.stringify(response.body, null, 2)}
-                </pre>
-              </div>
-            </TabsContent>
-
-            <TabsContent value="cookies" className="flex-1 overflow-auto p-4">
-              <div className="text-center text-sm text-muted-foreground py-8">
-                No cookies
-              </div>
-            </TabsContent>
-
-            <TabsContent
-              value="headers"
-              className="flex-1 flex flex-col overflow-hidden m-0"
-            >
-              <div className="border-b bg-muted/20">
-                <div className="grid grid-cols-2 gap-2 px-4 py-2 text-xs font-medium text-muted-foreground">
-                  <div>KEY</div>
-                  <div>VALUE</div>
-                </div>
-              </div>
+          {response ? (
+            activeResponseTab === "headers" ? (
               <div className="flex-1 overflow-auto">
+                <div className="border-b bg-muted/20">
+                  <div className="grid grid-cols-2 gap-2 px-4 py-2 text-xs font-medium text-muted-foreground">
+                    <div>KEY</div>
+                    <div>VALUE</div>
+                  </div>
+                </div>
                 <div className="divide-y">
                   {Object.entries(response.headers).map(([key, value]) => (
                     <div
@@ -1045,17 +1304,53 @@ export function RequestBuilder({ requestId }: RequestBuilderProps) {
                   ))}
                 </div>
               </div>
-            </TabsContent>
-
-            <TabsContent
-              value="test-results"
-              className="flex-1 overflow-auto p-4"
-            >
-              <div className="text-center text-sm text-muted-foreground py-8">
-                Coming soon...
+            ) : (
+              <div className="flex-1 flex flex-col overflow-hidden">
+                <div className="border-b p-2 bg-muted/20 flex items-center gap-2">
+                  {availableViews.length > 1 ? (
+                    <Select
+                      value={responseView}
+                      onValueChange={(value) =>
+                        setResponseView(value as BodyViewMode)
+                      }
+                    >
+                      <SelectTrigger className="w-[140px] h-7 text-xs">
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent>
+                        {availableViews.map((view) => (
+                          <SelectItem key={view} value={view}>
+                            {RESPONSE_VIEW_LABELS[view]}
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                  ) : (
+                    <div className="rounded border border-border/40 bg-background px-3 py-1 text-xs font-medium text-muted-foreground">
+                      {RESPONSE_VIEW_LABELS[availableViews[0] ?? "raw"]}
+                    </div>
+                  )}
+                  {contentTypeLabel && (
+                    <span className="text-xs text-muted-foreground">
+                      {contentTypeLabel}
+                    </span>
+                  )}
+                </div>
+                <div className="flex-1 overflow-auto p-4 bg-background">
+                  {bodyContent}
+                </div>
               </div>
-            </TabsContent>
-          </Tabs>
+            )
+          ) : (
+            <div className="flex-1 flex items-center justify-center bg-muted/20">
+              <div className="flex items-center gap-3 rounded-lg border border-border/60 bg-background px-4 py-3 shadow-sm">
+                <Loader2 className="h-4 w-4 animate-spin text-foreground" />
+                <span className="text-sm text-muted-foreground">
+                  Warte auf Response...
+                </span>
+              </div>
+            </div>
+          )}
         </div>
       )}
     </div>
